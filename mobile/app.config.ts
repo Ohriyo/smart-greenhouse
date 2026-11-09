@@ -10,7 +10,8 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   platforms: ['android'],
   orientation: 'portrait',
   icon: './assets/icon.png',
-  userInterfaceStyle: 'light',
+  // Follow the system light/dark setting (needs expo-system-ui on Android).
+  userInterfaceStyle: 'automatic',
   android: {
     package: 'com.riopana.greenhouse',
     adaptiveIcon: {
@@ -24,6 +25,8 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   plugins: [
     'expo-router',
     'expo-status-bar',
+    'expo-system-ui',
+    'expo-font',
     [
       'expo-build-properties',
       {

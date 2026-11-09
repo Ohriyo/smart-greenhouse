@@ -1,66 +1,187 @@
-import { useQuery } from '@tanstack/react-query';
-import { Pressable, StyleSheet, Text } from 'react-native';
+import { router } from 'expo-router';
+import { useState, type ReactNode } from 'react';
+import { StyleSheet, useWindowDimensions, View } from 'react-native';
 
-import { ScreenPlaceholder } from '@/components/ui/ScreenPlaceholder';
-import { DEFAULT_API_URL } from '@/constants/config';
-import { HealthSchema, type Health } from '@/types/api';
+import {
+  AlertRow,
+  ConnectionBanner,
+  FanStatusCard,
+  SensorCard,
+  type ConnectionState,
+} from '@/components/greenhouse';
+import { Button, Card, ErrorState, Screen, Skeleton, StatusPill, Text } from '@/components/ui';
+import { mockDevice, mockOfflineLastSeen, mockReading, mockThresholds } from '@/constants/mock';
+import { useMockStore } from '@/store/mockStore';
+import { useTheme } from '@/theme';
+import type { AlertMetric } from '@/types/api';
+import { limitsFor, sensorStatus } from '@/utils/sensors';
+import { formatRelative, useNow } from '@/utils/time';
 
-/** Setup check only: the real API client (fetch wrapper) comes in a later phase. */
-async function fetchHealth(baseUrl: string): Promise<Health> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 5000);
-  try {
-    const res = await fetch(`${baseUrl}/api/health`, { signal: controller.signal });
-    const json: unknown = await res.json();
-    return HealthSchema.parse(json);
-  } finally {
-    clearTimeout(timer);
-  }
-}
+const METRIC_ORDER: AlertMetric[] = ['airTemp', 'humidity', 'soilMoisture', 'lux'];
+/** Below this width the sensor grid uses one column (small phones, large font). */
+const ONE_COLUMN_BELOW = 360;
 
 export default function DashboardScreen() {
-  const health = useQuery({
-    queryKey: ['health', DEFAULT_API_URL],
-    queryFn: () => fetchHealth(DEFAULT_API_URL ?? ''),
-    enabled: false, // only when the button is pressed
-    retry: false,
-  });
+  const theme = useTheme();
+  const now = useNow();
+  const { width, fontScale } = useWindowDimensions();
+  const scenario = useMockStore((s) => s.scenario);
+  const alerts = useMockStore((s) => s.alerts);
+  const markRead = useMockStore((s) => s.markRead);
+  const [retrying, setRetrying] = useState(false);
 
-  let result = 'Not checked yet.';
-  if (health.isFetching) result = 'Checking…';
-  else if (health.isError) result = `❌ ${health.error.message}`;
-  else if (health.data)
-    result = `✅ Backend ${health.data.status} · DB ${health.data.db} · MQTT ${health.data.mqtt}`;
+  const online = scenario !== 'offline';
+  const lastSeen = online ? mockDevice.lastSeen : mockOfflineLastSeen;
+  const connection: ConnectionState =
+    scenario === 'offline'
+      ? 'device-offline'
+      : scenario === 'error'
+        ? 'backend-unreachable'
+        : 'connected';
+  const columns = width < ONE_COLUMN_BELOW || fontScale > 1.3 ? 1 : 2;
+
+  const header = {
+    title: mockDevice.name,
+    subtitle: online ? `Live · updated ${formatRelative(lastSeen, now)}` : 'No live data',
+    headerRight: online ? (
+      <StatusPill tone="ok" label="Online" accessibilityLabel="Device online" />
+    ) : (
+      <StatusPill tone="offline" label="Offline" accessibilityLabel="Device offline" />
+    ),
+  };
+
+  if (scenario === 'loading') {
+    return (
+      <Screen {...header} subtitle="Loading…">
+        <View accessible accessibilityLabel="Loading greenhouse data" style={styles.loading}>
+          <Grid columns={columns} gap={theme.spacing.md}>
+            {METRIC_ORDER.map((m) => (
+              <Card key={m} style={styles.skeletonCard}>
+                <Skeleton width={36} height={36} radius={18} />
+                <Skeleton width="60%" height={14} />
+                <Skeleton width="80%" height={30} />
+              </Card>
+            ))}
+          </Grid>
+          <Skeleton height={88} radius={theme.radii.lg} />
+        </View>
+      </Screen>
+    );
+  }
+
+  if (scenario === 'error') {
+    return (
+      <Screen {...header} subtitle="Connection problem">
+        <ErrorState
+          title="Can't load the greenhouse"
+          message="The app couldn't reach the backend on your laptop. Check that it is running and that the phone is on the same Wi-Fi."
+          retrying={retrying}
+          onRetry={() => {
+            setRetrying(true);
+            setTimeout(() => setRetrying(false), 1200);
+          }}
+        />
+      </Screen>
+    );
+  }
+
+  const recent = alerts.slice(0, 3);
+  const unread = alerts.filter((a) => a.readAt === null).length;
 
   return (
-    <ScreenPlaceholder
-      title="Dashboard"
-      description="Phase 3 setup screen. Live greenhouse data comes in a later phase."
+    <Screen
+      {...header}
+      banner={<ConnectionBanner state={connection} lastSeen={lastSeen} now={now} />}
     >
-      <Text style={styles.label}>API URL: {DEFAULT_API_URL ?? 'not set (see mobile/.env)'}</Text>
-      <Pressable
-        accessibilityRole="button"
-        style={[styles.button, !DEFAULT_API_URL && styles.buttonDisabled]}
-        disabled={!DEFAULT_API_URL || health.isFetching}
-        onPress={() => void health.refetch()}
-      >
-        <Text style={styles.buttonText}>Check backend</Text>
-      </Pressable>
-      <Text style={styles.result}>{result}</Text>
-    </ScreenPlaceholder>
+      <Grid columns={columns} gap={theme.spacing.md}>
+        {METRIC_ORDER.map((metric) => {
+          const [min, max] = limitsFor(metric, mockThresholds);
+          const value = mockReading[metric];
+          return (
+            <SensorCard
+              key={metric}
+              metric={metric}
+              value={value}
+              min={min}
+              max={max}
+              status={sensorStatus(metric, value, min, max, online)}
+              updatedAt={lastSeen}
+              now={now}
+              onPress={() => router.push({ pathname: '/history', params: { metric } })}
+            />
+          );
+        })}
+      </Grid>
+
+      <FanStatusCard
+        fanOn={mockReading.fanOn}
+        fanMode={mockReading.fanMode}
+        fanOnTemp={mockThresholds.fanOnTemp}
+        fanOffTemp={mockThresholds.fanOffTemp}
+        deviceOnline={online}
+        onPress={() => router.push('/control')}
+      />
+
+      <Card>
+        <View style={styles.sectionHeader}>
+          <Text variant="heading" accessibilityRole="header">
+            Recent alerts
+          </Text>
+          {unread > 0 ? <StatusPill tone="danger" label={`${unread} new`} /> : null}
+        </View>
+        {recent.length === 0 ? (
+          <Text color="secondary">No alerts. Everything is within range.</Text>
+        ) : (
+          recent.map((a, i) => (
+            <View
+              key={a.id}
+              style={
+                i > 0
+                  ? {
+                      borderTopWidth: StyleSheet.hairlineWidth,
+                      borderTopColor: theme.colors.border,
+                    }
+                  : null
+              }
+            >
+              <AlertRow alert={a} now={now} onPress={markRead} />
+            </View>
+          ))
+        )}
+        <Button
+          label="See all alerts"
+          variant="ghost"
+          icon="chevron-forward"
+          onPress={() => router.push('/alerts')}
+        />
+      </Card>
+    </Screen>
+  );
+}
+
+/** Simple responsive grid: `columns` cards per row with equal widths. */
+function Grid({ columns, gap, children }: { columns: number; gap: number; children: ReactNode[] }) {
+  const rows: ReactNode[][] = [];
+  for (let i = 0; i < children.length; i += columns) rows.push(children.slice(i, i + columns));
+  return (
+    <View style={{ gap }}>
+      {rows.map((row, r) => (
+        <View key={r} style={[styles.gridRow, { gap }]}>
+          {row}
+        </View>
+      ))}
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  label: { fontSize: 14, color: '#1B3A1D' },
-  button: {
-    alignSelf: 'flex-start',
-    backgroundColor: '#2E7D32',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderRadius: 8,
+  loading: { gap: 16 },
+  skeletonCard: { flex: 1, gap: 12 },
+  gridRow: { flexDirection: 'row' },
+  sectionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 4,
   },
-  buttonDisabled: { opacity: 0.4 },
-  buttonText: { color: '#FFFFFF', fontWeight: '600', fontSize: 16 },
-  result: { fontSize: 15, color: '#1B3A1D' },
 });

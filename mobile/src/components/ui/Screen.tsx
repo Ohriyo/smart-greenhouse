@@ -8,7 +8,8 @@ import { Text } from './Text';
 
 interface ScreenProps {
   title: string;
-  subtitle?: string;
+  /** Text, or a node (e.g. a self-updating "updated 3 s ago" component). */
+  subtitle?: ReactNode;
   /** Element shown at the right of the title (e.g. a status pill or button). */
   headerRight?: ReactNode;
   /** Content shown between the header and the body (e.g. a connection banner). */
@@ -47,11 +48,13 @@ export function Screen({
         <Text variant="title" accessibilityRole="header" numberOfLines={1}>
           {title}
         </Text>
-        {subtitle ? (
+        {typeof subtitle === 'string' ? (
           <Text variant="caption" color="secondary" numberOfLines={2}>
             {subtitle}
           </Text>
-        ) : null}
+        ) : (
+          (subtitle ?? null)
+        )}
       </View>
       {headerRight ? <View style={styles.headerRight}>{headerRight}</View> : null}
     </View>

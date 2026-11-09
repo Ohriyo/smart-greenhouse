@@ -3,10 +3,11 @@ import { StyleSheet, View } from 'react-native';
 
 import { Text, type IconName } from '@/components/ui';
 import { toneColors, useTheme, type StatusTone } from '@/theme';
-import { formatRelative } from '@/utils/time';
+import { formatRelative, useNow } from '@/utils/time';
 
 export type ConnectionState =
   | 'connected'
+  | 'connecting' // first connection since start / server change
   | 'reconnecting' // app ↔ backend socket dropped, retrying
   | 'backend-unreachable' // app can't reach the laptop
   | 'device-offline'; // backend is fine, the ESP32 is not
@@ -15,13 +16,13 @@ interface ConnectionBannerProps {
   state: ConnectionState;
   /** Device lastSeen, for the device-offline message. */
   lastSeen?: string | null;
-  now: number;
 }
 
 const CONFIG: Record<
   Exclude<ConnectionState, 'connected'>,
   { tone: StatusTone; icon: IconName; title: string }
 > = {
+  connecting: { tone: 'neutral', icon: 'radio-outline', title: 'Connecting to the greenhouse…' },
   reconnecting: { tone: 'warning', icon: 'sync', title: 'Reconnecting to the backend…' },
   'backend-unreachable': {
     tone: 'danger',
@@ -32,8 +33,9 @@ const CONFIG: Record<
 };
 
 /** Shown above the content when live data may be stale. Renders nothing when connected. */
-export function ConnectionBanner({ state, lastSeen = null, now }: ConnectionBannerProps) {
+export function ConnectionBanner({ state, lastSeen = null }: ConnectionBannerProps) {
   const theme = useTheme();
+  const now = useNow(5000); // own clock: the screen doesn't re-render for it
   if (state === 'connected') return null;
 
   const cfg = CONFIG[state];
@@ -42,8 +44,10 @@ export function ConnectionBanner({ state, lastSeen = null, now }: ConnectionBann
     state === 'device-offline'
       ? `Last data ${formatRelative(lastSeen, now)}. The fan keeps running on its own.`
       : state === 'backend-unreachable'
-        ? 'Check that the laptop is on and on the same Wi-Fi. Showing the last known values.'
-        : 'Values may be a few seconds old.';
+        ? 'Check that the backend is running and the phone is on the same Wi-Fi. Showing the last known values.'
+        : state === 'connecting'
+          ? 'Opening the live connection to your laptop.'
+          : 'Values may be a few seconds old.';
 
   return (
     <View

@@ -1,160 +1,201 @@
 import { router } from 'expo-router';
-import { useState, type ReactNode } from 'react';
-import { StyleSheet, useWindowDimensions, View } from 'react-native';
+import { useCallback, useState, type ReactNode } from 'react';
+import { RefreshControl, StyleSheet, useWindowDimensions, View } from 'react-native';
 
 import {
-  AlertRow,
   ConnectionBanner,
-  FanStatusCard,
-  SensorCard,
+  LiveFanCard,
+  LiveSensorCard,
+  UpdatedAgo,
   type ConnectionState,
 } from '@/components/greenhouse';
-import { Button, Card, ErrorState, Screen, Skeleton, StatusPill, Text } from '@/components/ui';
-import { mockDevice, mockOfflineLastSeen, mockReading, mockThresholds } from '@/constants/mock';
-import { useMockStore } from '@/store/mockStore';
-import { useTheme } from '@/theme';
+import { Card, EmptyState, ErrorState, Screen, Skeleton, StatusPill } from '@/components/ui';
+import { useDevicesQuery, useLatestQuery, useThresholdsQuery } from '@/features/dashboard/queries';
+import { useConnectionState } from '@/features/dashboard/useConnectionState';
+import { describeError } from '@/services/api';
+import { useLiveStore } from '@/store/liveStore';
+import { useSettingsStore } from '@/store/settingsStore';
+import { useTheme, type StatusTone } from '@/theme';
 import type { AlertMetric } from '@/types/api';
-import { limitsFor, sensorStatus } from '@/utils/sensors';
-import { formatRelative, useNow } from '@/utils/time';
+import { limitsFor } from '@/utils/sensors';
 
 const METRIC_ORDER: AlertMetric[] = ['airTemp', 'humidity', 'soilMoisture', 'lux'];
 /** Below this width the sensor grid uses one column (small phones, large font). */
 const ONE_COLUMN_BELOW = 360;
 
+const PILL: Record<ConnectionState, { tone: StatusTone; label: string; spoken: string }> = {
+  connected: { tone: 'ok', label: 'Live', spoken: 'Live, device online' },
+  connecting: { tone: 'neutral', label: 'Connecting', spoken: 'Connecting' },
+  reconnecting: { tone: 'warning', label: 'Reconnecting', spoken: 'Reconnecting' },
+  'backend-unreachable': { tone: 'danger', label: 'No server', spoken: 'Server unreachable' },
+  'device-offline': { tone: 'offline', label: 'Offline', spoken: 'Device offline' },
+};
+
 export default function DashboardScreen() {
   const theme = useTheme();
-  const now = useNow();
   const { width, fontScale } = useWindowDimensions();
-  const scenario = useMockStore((s) => s.scenario);
-  const alerts = useMockStore((s) => s.alerts);
-  const markRead = useMockStore((s) => s.markRead);
-  const [retrying, setRetrying] = useState(false);
-
-  const online = scenario !== 'offline';
-  const lastSeen = online ? mockDevice.lastSeen : mockOfflineLastSeen;
-  const connection: ConnectionState =
-    scenario === 'offline'
-      ? 'device-offline'
-      : scenario === 'error'
-        ? 'backend-unreachable'
-        : 'connected';
   const columns = width < ONE_COLUMN_BELOW || fontScale > 1.3 ? 1 : 2;
 
-  const header = {
-    title: mockDevice.name,
-    subtitle: online ? `Live · updated ${formatRelative(lastSeen, now)}` : 'No live data',
-    headerRight: online ? (
-      <StatusPill tone="ok" label="Online" accessibilityLabel="Device online" />
-    ) : (
-      <StatusPill tone="offline" label="Offline" accessibilityLabel="Device offline" />
-    ),
-  };
+  const apiUrl = useSettingsStore((s) => s.apiUrl);
+  const hydrated = useSettingsStore((s) => s.hydrated);
 
-  if (scenario === 'loading') {
-    return (
-      <Screen {...header} subtitle="Loading…">
-        <View accessible accessibilityLabel="Loading greenhouse data" style={styles.loading}>
-          <Grid columns={columns} gap={theme.spacing.md}>
-            {METRIC_ORDER.map((m) => (
-              <Card key={m} style={styles.skeletonCard}>
-                <Skeleton width={36} height={36} radius={18} />
-                <Skeleton width="60%" height={14} />
-                <Skeleton width="80%" height={30} />
-              </Card>
-            ))}
-          </Grid>
-          <Skeleton height={88} radius={theme.radii.lg} />
-        </View>
-      </Screen>
-    );
-  }
+  const devicesQuery = useDevicesQuery();
+  // Single-greenhouse app: show the first device (sorted by id).
+  const deviceId = useLiveStore((s) => s.deviceIds[0]);
+  const deviceName = useLiveStore((s) => (deviceId ? s.devices[deviceId]?.name : undefined));
+  const lastSeen = useLiveStore((s) => (deviceId ? s.devices[deviceId]?.lastSeen : null) ?? null);
+  const hasReading = useLiveStore((s) => (deviceId ? !!s.readings[deviceId] : false));
+  const latestQuery = useLatestQuery(deviceId);
+  const thresholdsQuery = useThresholdsQuery(deviceId);
+  const thresholds = thresholdsQuery.data;
 
-  if (scenario === 'error') {
+  const connection = useConnectionState(deviceId, devicesQuery.isError || latestQuery.isError);
+
+  const [refreshing, setRefreshing] = useState(false);
+  const { refetch: refetchDevices } = devicesQuery;
+  const { refetch: refetchLatest } = latestQuery;
+  const { refetch: refetchThresholds } = thresholdsQuery;
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    await Promise.allSettled([refetchDevices(), refetchLatest(), refetchThresholds()]);
+    setRefreshing(false);
+  }, [refetchDevices, refetchLatest, refetchThresholds]);
+
+  // Stable callbacks keep the memoized cards from re-rendering.
+  const openHistory = useCallback(
+    (metric: AlertMetric) => router.push({ pathname: '/history', params: { metric } }),
+    [],
+  );
+  const openControl = useCallback(() => router.push('/control'), []);
+
+  const refreshControl = (
+    <RefreshControl
+      refreshing={refreshing}
+      onRefresh={() => void onRefresh()}
+      colors={[theme.colors.accent]}
+      progressBackgroundColor={theme.colors.surface}
+    />
+  );
+  const pill = PILL[connection];
+  const headerRight = (
+    <StatusPill tone={pill.tone} label={pill.label} accessibilityLabel={pill.spoken} />
+  );
+
+  // --- No server configured ---
+  if (hydrated && !apiUrl) {
     return (
-      <Screen {...header} subtitle="Connection problem">
-        <ErrorState
-          title="Can't load the greenhouse"
-          message="The app couldn't reach the backend on your laptop. Check that it is running and that the phone is on the same Wi-Fi."
-          retrying={retrying}
-          onRetry={() => {
-            setRetrying(true);
-            setTimeout(() => setRetrying(false), 1200);
-          }}
+      <Screen title="Greenhouse" subtitle="Not connected">
+        <EmptyState
+          icon="server-outline"
+          title="Set your server address"
+          message="Enter your laptop's address (e.g. http://192.168.1.50:4000) in Settings."
+          action={{ label: 'Open Settings', onPress: () => router.push('/settings') }}
         />
       </Screen>
     );
   }
 
-  const recent = alerts.slice(0, 3);
-  const unread = alerts.filter((a) => a.readAt === null).length;
+  // --- No device yet ---
+  if (!deviceId) {
+    if (devicesQuery.isError && !devicesQuery.isFetching) {
+      return (
+        <Screen title="Greenhouse" headerRight={headerRight} refreshControl={refreshControl}>
+          <ErrorState
+            title="Can't reach the server"
+            message={describeError(devicesQuery.error)}
+            onRetry={() => void onRefresh()}
+            retrying={refreshing}
+          />
+        </Screen>
+      );
+    }
+    if (devicesQuery.isSuccess && devicesQuery.data.length === 0) {
+      return (
+        <Screen title="Greenhouse" headerRight={headerRight} refreshControl={refreshControl}>
+          <EmptyState
+            icon="leaf-outline"
+            title="No greenhouse yet"
+            message="Power on the ESP32 or start the simulator (npm run sim in backend/). It appears here automatically."
+            action={{ label: 'Refresh', onPress: () => void onRefresh() }}
+          />
+        </Screen>
+      );
+    }
+    return <LoadingDashboard columns={columns} headerRight={headerRight} />;
+  }
+
+  if (!hasReading && latestQuery.isPending) {
+    return <LoadingDashboard columns={columns} headerRight={headerRight} title={deviceName} />;
+  }
 
   return (
     <Screen
-      {...header}
-      banner={<ConnectionBanner state={connection} lastSeen={lastSeen} now={now} />}
+      title={deviceName ?? 'Greenhouse'}
+      subtitle={
+        hasReading ? (
+          <UpdatedAgo
+            deviceId={deviceId}
+            prefix={connection === 'connected' ? 'Live · updated' : 'Last data'}
+            color="secondary"
+          />
+        ) : (
+          'Waiting for the first reading'
+        )
+      }
+      headerRight={headerRight}
+      banner={<ConnectionBanner state={connection} lastSeen={lastSeen} />}
+      refreshControl={refreshControl}
     >
       <Grid columns={columns} gap={theme.spacing.md}>
         {METRIC_ORDER.map((metric) => {
-          const [min, max] = limitsFor(metric, mockThresholds);
-          const value = mockReading[metric];
+          const [min, max] = thresholds ? limitsFor(metric, thresholds) : [null, null];
           return (
-            <SensorCard
+            <LiveSensorCard
               key={metric}
+              deviceId={deviceId}
               metric={metric}
-              value={value}
               min={min}
               max={max}
-              status={sensorStatus(metric, value, min, max, online)}
-              updatedAt={lastSeen}
-              now={now}
-              onPress={() => router.push({ pathname: '/history', params: { metric } })}
+              onPress={openHistory}
             />
           );
         })}
       </Grid>
 
-      <FanStatusCard
-        fanOn={mockReading.fanOn}
-        fanMode={mockReading.fanMode}
-        fanOnTemp={mockThresholds.fanOnTemp}
-        fanOffTemp={mockThresholds.fanOffTemp}
-        deviceOnline={online}
-        onPress={() => router.push('/control')}
+      <LiveFanCard
+        deviceId={deviceId}
+        fanOnTemp={thresholds?.fanOnTemp ?? 32}
+        fanOffTemp={thresholds?.fanOffTemp ?? 28}
+        onPress={openControl}
       />
+    </Screen>
+  );
+}
 
-      <Card>
-        <View style={styles.sectionHeader}>
-          <Text variant="heading" accessibilityRole="header">
-            Recent alerts
-          </Text>
-          {unread > 0 ? <StatusPill tone="danger" label={`${unread} new`} /> : null}
-        </View>
-        {recent.length === 0 ? (
-          <Text color="secondary">No alerts. Everything is within range.</Text>
-        ) : (
-          recent.map((a, i) => (
-            <View
-              key={a.id}
-              style={
-                i > 0
-                  ? {
-                      borderTopWidth: StyleSheet.hairlineWidth,
-                      borderTopColor: theme.colors.border,
-                    }
-                  : null
-              }
-            >
-              <AlertRow alert={a} now={now} onPress={markRead} />
-            </View>
-          ))
-        )}
-        <Button
-          label="See all alerts"
-          variant="ghost"
-          icon="chevron-forward"
-          onPress={() => router.push('/alerts')}
-        />
-      </Card>
+function LoadingDashboard({
+  columns,
+  headerRight,
+  title = 'Greenhouse',
+}: {
+  columns: number;
+  headerRight: ReactNode;
+  title?: string;
+}) {
+  const theme = useTheme();
+  return (
+    <Screen title={title} subtitle="Loading…" headerRight={headerRight}>
+      <View accessible accessibilityLabel="Loading greenhouse data" style={styles.loading}>
+        <Grid columns={columns} gap={theme.spacing.md}>
+          {METRIC_ORDER.map((m) => (
+            <Card key={m} style={styles.skeletonCard}>
+              <Skeleton width={36} height={36} radius={18} />
+              <Skeleton width="60%" height={14} />
+              <Skeleton width="80%" height={30} />
+            </Card>
+          ))}
+        </Grid>
+        <Skeleton height={88} radius={theme.radii.lg} />
+      </View>
     </Screen>
   );
 }
@@ -178,10 +219,4 @@ const styles = StyleSheet.create({
   loading: { gap: 16 },
   skeletonCard: { flex: 1, gap: 12 },
   gridRow: { flexDirection: 'row' },
-  sectionHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: 4,
-  },
 });

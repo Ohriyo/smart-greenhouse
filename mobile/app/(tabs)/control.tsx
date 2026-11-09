@@ -18,7 +18,6 @@ import { useMockStore } from '@/store/mockStore';
 import { useTheme } from '@/theme';
 import { ThresholdsUpdateSchema, type FanMode, type ThresholdsUpdate } from '@/types/api';
 import { formatValue } from '@/utils/sensors';
-import { useNow } from '@/utils/time';
 
 const MODE_OPTIONS: readonly SegmentOption<FanMode>[] = [
   { value: 'auto', label: 'Auto', accessibilityLabel: 'Automatic' },
@@ -48,7 +47,6 @@ function toUpdate(t: typeof mockThresholds): ThresholdsUpdate {
 export default function ControlScreen() {
   const theme = useTheme();
   const toast = useToast();
-  const now = useNow();
   const scenario = useMockStore((s) => s.scenario);
   const online = scenario === 'normal' || scenario === 'loading';
 
@@ -98,7 +96,6 @@ export default function ControlScreen() {
             online ? 'connected' : scenario === 'error' ? 'backend-unreachable' : 'device-offline'
           }
           lastSeen={mockOfflineLastSeen}
-          now={now}
         />
       }
     >

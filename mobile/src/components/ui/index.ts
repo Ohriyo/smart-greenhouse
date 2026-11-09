@@ -8,4 +8,5 @@ export { Skeleton } from './Skeleton';
 export { StatusPill } from './StatusPill';
 export { Stepper } from './Stepper';
 export { Text, type TextProps } from './Text';
+export { TextField } from './TextField';
 export { ToastProvider, useToast, type ToastTone } from './Toast';

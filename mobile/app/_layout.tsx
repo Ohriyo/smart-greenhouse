@@ -1,14 +1,38 @@
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { focusManager, QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { DarkTheme, DefaultTheme, Stack, ThemeProvider } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import * as SystemUI from 'expo-system-ui';
 import { useEffect, useMemo, useState } from 'react';
+import { AppState } from 'react-native';
 
 import { ToastProvider } from '@/components/ui';
+import { ApiError } from '@/services/api';
+import { RealtimeBridge } from '@/services/realtime/RealtimeBridge';
 import { useTheme } from '@/theme';
 
+// React Native has no window focus: treat "app came to the foreground" as focus,
+// so stale queries refetch when you reopen the app.
+focusManager.setEventListener((setFocused) => {
+  const sub = AppState.addEventListener('change', (state) => setFocused(state === 'active'));
+  return () => sub.remove();
+});
+
+function createQueryClient() {
+  return new QueryClient({
+    defaultOptions: {
+      queries: {
+        staleTime: 10_000, // socket events keep the live data fresh in between
+        // Retry once for network hiccups; never retry 4xx or schema mismatches.
+        retry: (failureCount, error) =>
+          failureCount < 1 &&
+          (!(error instanceof ApiError) || error.kind === 'network' || error.kind === 'timeout'),
+      },
+    },
+  });
+}
+
 export default function RootLayout() {
-  const [queryClient] = useState(() => new QueryClient());
+  const [queryClient] = useState(createQueryClient);
   const theme = useTheme();
   const { colors } = theme;
 
@@ -36,6 +60,7 @@ export default function RootLayout() {
 
   return (
     <QueryClientProvider client={queryClient}>
+      <RealtimeBridge />
       <ThemeProvider value={navTheme}>
         <ToastProvider>
           <StatusBar style="auto" />

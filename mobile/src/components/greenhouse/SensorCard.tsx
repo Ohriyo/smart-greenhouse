@@ -1,12 +1,11 @@
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
-import { memo } from 'react';
+import { memo, type ReactNode } from 'react';
 import { StyleSheet, View } from 'react-native';
 
 import { Card, StatusPill, Text } from '@/components/ui';
 import { toneColors, useTheme } from '@/theme';
 import type { AlertMetric } from '@/types/api';
 import { formatRange, formatValue, METRICS, type SensorStatus } from '@/utils/sensors';
-import { formatRelative, formatRelativeSpoken } from '@/utils/time';
 
 interface SensorCardProps {
   metric: AlertMetric;
@@ -14,9 +13,11 @@ interface SensorCardProps {
   status: SensorStatus;
   min: number | null;
   max: number | null;
-  updatedAt: string | null;
-  /** Current time from the screen's single clock (see useNow). */
-  now: number;
+  /**
+   * Bottom line, typically <UpdatedAgo />. It updates itself every second, so
+   * the card itself only re-renders when its value or status changes.
+   */
+  footer?: ReactNode;
   onPress?: () => void;
 }
 
@@ -26,8 +27,7 @@ export const SensorCard = memo(function SensorCard({
   status,
   min,
   max,
-  updatedAt,
-  now,
+  footer,
   onPress,
 }: SensorCardProps) {
   const theme = useTheme();
@@ -35,16 +35,10 @@ export const SensorCard = memo(function SensorCard({
   const tone = toneColors(theme, status.tone);
   const display = formatValue(value, meta.decimals);
   const range = formatRange(min, max, meta.unit);
-  const updated = formatRelative(updatedAt, now);
   const highlight = status.tone === 'warning' || status.tone === 'danger';
 
   const spokenValue = value === null ? 'no reading' : `${display} ${meta.unit}`;
-  const a11y = [
-    `${meta.label}, ${spokenValue}`,
-    status.label,
-    range ? `target ${range}` : null,
-    `updated ${formatRelativeSpoken(updatedAt, now)}`,
-  ]
+  const a11y = [`${meta.label}, ${spokenValue}`, status.label, range ? `target ${range}` : null]
     .filter(Boolean)
     .join(', ');
 
@@ -78,16 +72,16 @@ export const SensorCard = memo(function SensorCard({
           ) : null}
         </View>
         <Text variant="caption" color="tertiary" numberOfLines={1}>
-          {range ? `Target ${range} · ` : ''}
-          {updated}
+          {range ? `Target ${range}` : 'No target set'}
         </Text>
+        {footer}
       </View>
     </Card>
   );
 });
 
 const styles = StyleSheet.create({
-  card: { flex: 1, gap: 12, minHeight: 148 },
+  card: { flex: 1, gap: 12, minHeight: 156 },
   top: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
   iconChip: {
     width: 36,

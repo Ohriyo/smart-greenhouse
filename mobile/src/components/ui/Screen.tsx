@@ -1,5 +1,11 @@
 import type { ReactNode } from 'react';
-import { ScrollView, StyleSheet, View, type ScrollViewProps } from 'react-native';
+import {
+  KeyboardAvoidingView,
+  ScrollView,
+  StyleSheet,
+  View,
+  type ScrollViewProps,
+} from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useTheme } from '@/theme';
@@ -8,6 +14,8 @@ import { Text } from './Text';
 
 interface ScreenProps {
   title: string;
+  /** Replaces the default title header (Home uses its own layout). */
+  header?: ReactNode;
   /** Text, or a node (e.g. a self-updating "updated 3 s ago" component). */
   subtitle?: ReactNode;
   /** Element shown at the right of the title (e.g. a status pill or button). */
@@ -26,6 +34,7 @@ interface ScreenProps {
  */
 export function Screen({
   title,
+  header: customHeader,
   subtitle,
   headerRight,
   banner,
@@ -42,7 +51,11 @@ export function Screen({
     paddingRight: spacing.lg + insets.right,
   };
 
-  const header = (
+  const header = customHeader ? (
+    <View style={[horizontal, { paddingTop: insets.top + spacing.lg, paddingBottom: spacing.lg }]}>
+      {customHeader}
+    </View>
+  ) : (
     <View style={[styles.header, horizontal, { paddingTop: insets.top + spacing.lg }]}>
       <View style={styles.headerText}>
         <Text variant="title" accessibilityRole="header" numberOfLines={1}>
@@ -61,7 +74,9 @@ export function Screen({
   );
 
   return (
-    <View style={[styles.root, { backgroundColor: theme.colors.background }]}>
+    // On Android a KeyboardAvoidingView without `behavior` keeps the focused input
+    // above the keyboard (Expo keyboard-handling guide).
+    <KeyboardAvoidingView style={[styles.root, { backgroundColor: theme.colors.background }]}>
       {scroll ? (
         <ScrollView
           contentContainerStyle={{ paddingBottom: spacing.xxl }}
@@ -79,7 +94,7 @@ export function Screen({
           <View style={styles.root}>{children}</View>
         </>
       )}
-    </View>
+    </KeyboardAvoidingView>
   );
 }
 

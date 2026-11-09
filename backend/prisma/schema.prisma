@@ -20,6 +20,20 @@ model Device {
   createdAt DateTime  @default(now())
   /// Telemetry interval the device reports (seconds); drives the "3 missed intervals" offline rule.
   telemetryIntervalSec Int?
+  /// Fan thresholds the device reports it is actually using (from telemetry).
+  /// Compared with Thresholds to show whether the device applied a change.
+  reportedFanOnTemp       Float?
+  reportedFanOffTemp      Float?
+  reportedFanThresholdsAt DateTime?
+  /// Latest Wi-Fi signal the device reported (dBm).
+  rssi       Int?
+  /// Seconds since the device booted, as reported at `uptimeAt`
+  /// (boot time = uptimeAt − uptimeSec; a drop means it rebooted).
+  uptimeSec  Int?
+  uptimeAt   DateTime?
+  /// Soil calibration the device reports using (mV in air = 0 %, in water = 100 %).
+  soilDryMv  Int?
+  soilWetMv  Int?
 
   readings   Reading[]
   thresholds Thresholds?
@@ -70,6 +84,9 @@ model Alert {
   severity String // "info" | "warning" | "critical"
   metric   String? // "airTemp" | "humidity" | "soilMoisture" | "lux" (threshold alerts only)
   value    Float?
+  /// The limit that was crossed (breach alerts only; null for recovered/offline/online
+  /// and for alerts created before this column existed). Exposed as `limit` in the API.
+  limitValue Float?
   message  String
   readAt   DateTime?
 
@@ -93,9 +110,66 @@ model FanEvent {
   @@index([deviceId, ts])
 }
 
+// Expo push token of a phone that wants closed-app alerts (expo-notifications).
 model PushToken {
   id        Int      @id @default(autoincrement())
-  token     String   @unique
+  token     String   @unique // "ExponentPushToken[...]"
   platform  String   @default("android")
   createdAt DateTime @default(now())
+  /// Last time the app (re)registered this token.
+  updatedAt DateTime @updatedAt
+}
+
+// Single-user app: one row (id = 1) holds the push notification preferences.
+model NotificationSettings {
+  id          Int      @id @default(1)
+  enabled     Boolean  @default(true)
+  minSeverity String   @default("warning") // "info" | "warning" | "critical"
+  updatedAt   DateTime @updatedAt
+}
+
+// Single-user app: one row (id = 1) holds the owner's SMS alert preferences.
+// The SMS provider's credentials are NOT here: they live in .env (secrets).
+model SmsSettings {
+  id              Int      @id @default(1)
+  enabled         Boolean  @default(false)
+  /// Owner's number in international format (+639171234567); null until entered.
+  phone           String?
+  /// Send the "greenhouse offline" SMS after this many minutes without data.
+  offlineAfterMin Int      @default(10)
+  updatedAt       DateTime @updatedAt
+}
+
+/// One row per SMS we tried to send: daily cap, "last SMS" in the app, test throttling.
+model SmsLog {
+  id         Int      @id @default(autoincrement())
+  ts         DateTime @default(now())
+  /// "critical" | "offline" | "closing" | "test"
+  kind       String
+  deviceId   String?
+  metric     String?
+  /// The text (never contains the phone number or any credential).
+  body       String
+  /// "sent" | "failed" | "skipped"
+  status     String
+  /// Why it failed or was skipped.
+  error      String?
+  providerId String?
+
+  @@index([ts])
+}
+
+/// A situation announced by SMS and not yet closed (so it is announced once, and
+/// the "back to normal" SMS follows). Only created after the opening SMS was sent.
+model SmsEpisode {
+  id          Int       @id @default(autoincrement())
+  deviceId    String
+  /// "airTemp" | "humidity" | "soilMoisture" | "lux" | "offline"
+  metric      String
+  openedAt    DateTime  @default(now())
+  /// Air temperature is back in range but the fan still runs: waiting for it to switch off.
+  recoveredAt DateTime?
+  closedAt    DateTime?
+
+  @@index([deviceId, metric, closedAt])
 }

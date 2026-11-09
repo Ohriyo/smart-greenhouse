@@ -60,3 +60,8 @@ export async function saveReading(deviceId: string, t: Telemetry, ts: Date): Pro
 export function getLatestReading(deviceId: string): Promise<Reading | null> {
   return prisma.reading.findFirst({ where: { deviceId }, orderBy: { ts: 'desc' } });
 }
+
+/** Most recent confirmed fan change (for "running since …"). */
+export function getLastFanEvent(deviceId: string): Promise<FanEvent | null> {
+  return prisma.fanEvent.findFirst({ where: { deviceId }, orderBy: { id: 'desc' } });
+}

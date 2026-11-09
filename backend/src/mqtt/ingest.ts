@@ -3,7 +3,14 @@ import { StatusSchema, TelemetrySchema } from '../domain/schemas.js';
 import { createLogger } from '../lib/logger.js';
 import type { Realtime } from '../realtime/socket.js';
 import type { RulesEngine } from '../rules/engine.js';
-import { ensureDevice, setPresence, type PresenceResult } from '../services/devices.js';
+import type { DevTools } from '../dev/devTools.js';
+import type { SmsNotifier } from '../sms/notifier.js';
+import {
+  getDevice,
+  setPresence,
+  updateReportedFanThresholds,
+  type PresenceResult,
+} from '../services/devices.js';
 import { pickTimestamp, saveReading } from '../services/readings.js';
 import { getThresholds } from '../services/thresholds.js';
 import type { CommandSender } from './commands.js';
@@ -15,6 +22,12 @@ interface IngestDeps {
   realtime: Realtime;
   commands: CommandSender;
   rules: RulesEngine;
+  /** Told about confirmed fan changes ("fan turned OFF" closes an air-temperature SMS episode). */
+  sms: Pick<SmsNotifier, 'onFanEvent'>;
+  /** Remembers which devices are the simulator (dev-only Demo tools). */
+  devTools: Pick<DevTools, 'noteTelemetry'>;
+  /** Start of the current broker connection (null while disconnected). */
+  listeningSince: () => Date | null;
 }
 
 export interface Ingest {
@@ -29,10 +42,19 @@ function parseJson(text: string): unknown {
   }
 }
 
-export function createIngest({ realtime, commands, rules }: IngestDeps): Ingest {
+export function createIngest({
+  realtime,
+  commands,
+  rules,
+  sms,
+  devTools,
+  listeningSince,
+}: IngestDeps): Ingest {
   // Messages of one device are processed strictly in order (fan-change detection
   // compares with the previous reading); different devices run concurrently.
   const queues = new Map<string, Promise<void>>();
+  /** Last reported sensor error set per device ("dht,soil"), to log changes only. */
+  const sensorErrors = new Map<string, string>();
 
   function enqueue(deviceId: string, task: () => Promise<void>): void {
     const next = (queues.get(deviceId) ?? Promise.resolve()).then(task).catch((err: unknown) => {
@@ -75,12 +97,53 @@ export function createIngest({ realtime, commands, rules }: IngestDeps): Ingest 
       log.warn(`${deviceId}: invalid telemetry dropped`, parsed.error.issues.slice(0, 5));
       return;
     }
-    const presence = await setPresence(deviceId, true, receivedAt, parsed.data.intervalSec);
+    // Failing sensors (their values are null): log only when the set changes.
+    const errors = (parsed.data.errors ?? []).slice().sort().join(',');
+    if ((sensorErrors.get(deviceId) ?? '') !== errors) {
+      sensorErrors.set(deviceId, errors);
+      if (errors) log.warn(`${deviceId}: sensor error(s): ${errors}`);
+      else log.info(`${deviceId}: all sensors ok`);
+    }
+
+    const t = parsed.data;
+    devTools.noteTelemetry(deviceId, t.simulator);
+    let presence = await setPresence(deviceId, true, receivedAt, t.intervalSec, {
+      rssi: t.rssi,
+      uptimeSec: t.uptimeSec,
+      soilDryMv: t.soilDryMv,
+      soilWetMv: t.soilWetMv,
+    });
+    if (presence.calibrationChanged) {
+      log.info(`${deviceId} soil calibration now dry ${t.soilDryMv} / wet ${t.soilWetMv} mV`);
+    }
+    // device:status acknowledges a changed calibration or fan thresholds (once).
+    let statusDirty = presence.calibrationChanged;
     const ts = pickTimestamp(parsed.data.ts, receivedAt);
     const { reading, fanEvent } = await saveReading(deviceId, parsed.data, ts);
 
+    // The device reports the fan thresholds it applied (acknowledgement).
+    const { fanOnTemp, fanOffTemp } = parsed.data;
+    if (fanOnTemp !== undefined && fanOffTemp !== undefined) {
+      const updated = await updateReportedFanThresholds(
+        presence.device,
+        fanOnTemp,
+        fanOffTemp,
+        receivedAt,
+      );
+      if (updated) {
+        log.info(`${deviceId} applied fan thresholds ${fanOnTemp}/${fanOffTemp} °C`);
+        presence = { ...presence, device: updated };
+        statusDirty = true;
+      }
+    }
+    // afterPresence emits device:status itself when online/offline changed.
+    if (statusDirty && !presence.changed) realtime.emitDeviceStatus(toDeviceDto(presence.device));
+
     realtime.emitTelemetry(toReadingDto(reading));
-    if (fanEvent) realtime.emitFanState(toFanStateDto(fanEvent));
+    if (fanEvent) {
+      realtime.emitFanState(toFanStateDto(fanEvent));
+      void sms.onFanEvent(toFanStateDto(fanEvent)); // never throws
+    }
     await afterPresence(deviceId, presence, '');
     await rules.evaluateReading(presence.device, reading);
   }
@@ -91,22 +154,39 @@ export function createIngest({ realtime, commands, rules }: IngestDeps): Ingest 
     retained: boolean,
     receivedAt: Date,
   ): Promise<void> {
+    // An empty retained payload means someone cleared the retained message
+    // (`mosquitto_pub -r -n -t …`): nothing to do.
+    if (text.trim() === '') {
+      log.debug(`${deviceId}: retained status cleared`);
+      return;
+    }
     const parsed = StatusSchema.safeParse(text.trim());
     if (!parsed.success) {
       log.warn(`${deviceId}: invalid status "${text.slice(0, 40)}" dropped`);
       return;
     }
     const online = parsed.data === 'online';
-    if (online && retained) {
-      // Replayed by the broker on (re)subscribe: it may be stale (device died, Last
-      // Will not yet fired), so it doesn't prove the device is alive. Only register
-      // unknown devices; fresh telemetry or a live "online" will mark it online.
-      const created = await ensureDevice(deviceId);
-      if (created) await afterPresence(deviceId, created, '');
+
+    if (retained) {
+      // Replayed by the broker on every (re)subscribe, possibly days old. Rules:
+      // - never auto-register a device from it (old test devices would come back)
+      // - "online" proves nothing (the device may have died before its Last Will)
+      // - "offline" is trusted, unless we've heard the device live since this
+      //   broker connection started (then the retained message is older)
+      const existing = await getDevice(deviceId);
+      if (!existing) {
+        log.debug(`${deviceId}: retained "${parsed.data}" for unknown device ignored`);
+        return;
+      }
+      if (online) return;
+      const since = listeningSince();
+      if (existing.lastSeen && since && existing.lastSeen >= since) return;
+      const presence = await setPresence(deviceId, false, null); // old: don't touch lastSeen
+      await afterPresence(deviceId, presence, 'Last Will or shutdown');
       return;
     }
-    // A retained "offline" is trusted; it may be old, so it does not update lastSeen.
-    const presence = await setPresence(deviceId, online, retained ? null : receivedAt);
+
+    const presence = await setPresence(deviceId, online, receivedAt);
     await afterPresence(deviceId, presence, 'Last Will or shutdown');
   }
 

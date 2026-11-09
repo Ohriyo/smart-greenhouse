@@ -1,95 +1,137 @@
-import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
+// button-check-ignore: pressable sensor *card* (keeps its rounded-rectangle shape), not a button
 import { memo, type ReactNode } from 'react';
-import { StyleSheet, View } from 'react-native';
+import { Pressable, StyleSheet, View, type StyleProp, type ViewStyle } from 'react-native';
 
-import { Card, StatusPill, Text } from '@/components/ui';
-import { toneColors, useTheme } from '@/theme';
+import { Icon, IconTile, MiniSparkline, StatusPill, Text } from '@/components/ui';
+import { cardShadow, useTheme } from '@/theme';
 import type { AlertMetric } from '@/types/api';
-import { formatRange, formatValue, METRICS, type SensorStatus } from '@/utils/sensors';
+import { formatMetric, METRICS, type SensorStatus } from '@/utils/sensors';
 
 interface SensorCardProps {
   metric: AlertMetric;
   value: number | null;
   status: SensorStatus;
-  min: number | null;
-  max: number | null;
-  /**
-   * Bottom line, typically <UpdatedAgo />. It updates itself every second, so
-   * the card itself only re-renders when its value or status changes.
-   */
-  footer?: ReactNode;
+  /** Direction of the last ~2 minutes (null = not enough data). */
+  trend: 'up' | 'down' | 'flat' | null;
+  /** Last ~2 minutes, oldest → newest, for the sparkline. */
+  sparkline: readonly (number | null)[];
   onPress?: () => void;
 }
 
+const TREND_ICON = { up: 'trending-up', down: 'trending-down', flat: 'remove' } as const;
+const TREND_WORD = { up: 'rising', down: 'falling', flat: 'steady' } as const;
+
+/**
+ * Live sensor tile (2×2 grid on Home): icon tile, status, label, big value,
+ * trend arrow and a full-width sparkline along the bottom. Memoized: it only
+ * re-renders when its own props change.
+ */
 export const SensorCard = memo(function SensorCard({
   metric,
   value,
   status,
-  min,
-  max,
-  footer,
+  trend,
+  sparkline,
   onPress,
 }: SensorCardProps) {
   const theme = useTheme();
+  const { colors } = theme;
   const meta = METRICS[metric];
-  const tone = toneColors(theme, status.tone);
-  const display = formatValue(value, meta.decimals);
-  const range = formatRange(min, max, meta.unit);
-  const highlight = status.tone === 'warning' || status.tone === 'danger';
-
-  const spokenValue = value === null ? 'no reading' : `${display} ${meta.unit}`;
-  const a11y = [`${meta.label}, ${spokenValue}`, status.label, range ? `target ${range}` : null]
+  const color = colors.chart[meta.colorKey];
+  const shown = formatMetric(metric, value);
+  const a11y = [`${meta.label}, ${shown.spoken}`, status.label, trend ? TREND_WORD[trend] : null]
     .filter(Boolean)
     .join(', ');
 
-  return (
-    <Card
-      onPress={onPress}
-      accessibilityLabel={a11y}
-      accessibilityHint={onPress ? 'Opens history' : undefined}
-      accentColor={highlight ? tone.fg : undefined}
-      style={styles.card}
-    >
-      <View style={styles.top} importantForAccessibility="no-hide-descendants">
-        <View style={[styles.iconChip, { backgroundColor: tone.bg }]}>
-          <MaterialCommunityIcons name={meta.icon} size={20} color={tone.fg} />
+  const body = (
+    <>
+      <View style={styles.pad}>
+        <View style={styles.top}>
+          <IconTile icon={meta.icon} color={color} background={`${color}1A`} size={36} />
+          <StatusPill tone={status.tone} label={status.label} variant="plain" />
         </View>
-        <StatusPill tone={status.tone} label={status.label} />
-      </View>
-
-      <View importantForAccessibility="no-hide-descendants">
-        <Text variant="caption" color="secondary" numberOfLines={1}>
+        <Text variant="caption" color="secondary" numberOfLines={1} style={styles.label}>
           {meta.label}
         </Text>
         <View style={styles.valueRow}>
-          <Text variant="value" tabular numberOfLines={1} adjustsFontSizeToFit>
-            {display}
+          <Text
+            variant="metric"
+            tabular
+            numberOfLines={1}
+            adjustsFontSizeToFit
+            style={styles.value}
+          >
+            {shown.value}
           </Text>
-          {value !== null ? (
-            <Text variant="bodyStrong" color="secondary" style={styles.unit}>
-              {meta.unit}
-            </Text>
-          ) : null}
+          <Text variant="caption" color="secondary" style={styles.unit}>
+            {shown.unit}
+          </Text>
+          <View style={styles.spacer} />
+          {trend ? <Icon name={TREND_ICON[trend]} size={16} color={colors.accent} /> : null}
         </View>
-        <Text variant="caption" color="tertiary" numberOfLines={1}>
-          {range ? `Target ${range}` : 'No target set'}
-        </Text>
-        {footer}
       </View>
-    </Card>
+      <MiniSparkline values={sparkline} color={color} />
+    </>
+  );
+
+  const frame = [
+    styles.card,
+    { backgroundColor: colors.surface, borderColor: colors.border, boxShadow: cardShadow(theme) },
+  ];
+
+  if (!onPress) {
+    return (
+      <View style={frame} accessible accessibilityLabel={a11y}>
+        {body}
+      </View>
+    );
+  }
+  return (
+    <PressableCard onPress={onPress} label={a11y} style={frame}>
+      {body}
+    </PressableCard>
   );
 });
 
+function PressableCard({
+  onPress,
+  label,
+  style,
+  children,
+}: {
+  onPress: () => void;
+  label: string;
+  style: StyleProp<ViewStyle>;
+  children: ReactNode;
+}) {
+  return (
+    <Pressable
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      accessibilityHint="Opens sensor details"
+      style={({ pressed }) => [style, pressed ? styles.pressed : null]}
+    >
+      {children}
+    </Pressable>
+  );
+}
+
 const styles = StyleSheet.create({
-  card: { flex: 1, gap: 12, minHeight: 156 },
-  top: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
-  iconChip: {
-    width: 36,
-    height: 36,
+  card: {
+    flex: 1,
     borderRadius: 18,
-    alignItems: 'center',
-    justifyContent: 'center',
+    borderWidth: StyleSheet.hairlineWidth,
+    overflow: 'hidden',
+    minHeight: 168,
+    justifyContent: 'space-between',
   },
-  valueRow: { flexDirection: 'row', alignItems: 'baseline', gap: 4, marginVertical: 2 },
-  unit: { marginBottom: 2 },
+  pad: { padding: 14, paddingBottom: 4 },
+  top: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between' },
+  label: { marginTop: 14 },
+  valueRow: { flexDirection: 'row', alignItems: 'baseline', gap: 3 },
+  value: { flexShrink: 1 },
+  unit: { marginLeft: 1 },
+  spacer: { flex: 1 },
+  pressed: { opacity: 0.9 },
 });

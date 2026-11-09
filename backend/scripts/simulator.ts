@@ -8,6 +8,9 @@
 //   npm run sim -- --stall-after 30   stop telemetry after 30 s but stay connected
 //   npm run sim -- --crash            Ctrl+C = power cut (broker sends the Last Will)
 //   npm run sim -- --device gh-02 --url mqtt://192.168.1.50:1883
+//
+// While it runs it also listens on greenhouse/<id>/sim for scenarios sent by the
+// app's dev-only Demo sheet (backend DEV_TOOLS=true): heatwave | drysoil | normal.
 import { parseArgs } from 'node:util';
 import { connect } from 'mqtt';
 import { z } from 'zod';
@@ -18,6 +21,7 @@ import {
   type DeviceCommand,
   type FanMode,
 } from '../src/domain/schemas.js';
+import { SimScenarioSchema, type SimScenario } from '../src/dev/scenarios.js';
 import { topics } from '../src/mqtt/topics.js';
 
 // ---------- CLI ----------
@@ -77,8 +81,9 @@ const opts = parsedOpts.data;
 
 // ---------- Simulation model ----------
 
-const SOIL_RAW_DRY = 3200; // ADC counts in dry air (calibration "dry")
-const SOIL_RAW_WET = 1350; // ADC counts in water (calibration "wet")
+// soilRaw is the sensor output in millivolts, like the firmware (analogReadMilliVolts).
+const SOIL_RAW_DRY = 2600; // mV in dry air (calibration "dry", 0 %)
+const SOIL_RAW_WET = 1200; // mV in water (calibration "wet", 100 %)
 
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 const noise = (amp: number) => (Math.random() * 2 - 1) * amp;
@@ -100,6 +105,9 @@ function outsideTemp(h: number): number {
 }
 
 const sim = {
+  /** Forced scenarios: start from the CLI flags, change at runtime via the Demo sheet. */
+  hot: opts.hot,
+  dry: opts.dry,
   airTemp: 0,
   humidity: 0,
   soilMoisture: opts.dry ? 26 : 62,
@@ -111,10 +119,14 @@ const sim = {
   // Firmware defaults (NVS); the backend pushes its values when we come online.
   fanOnTemp: 32,
   fanOffTemp: 28,
+  // Soil calibration reported back (like the firmware's NVS values); the
+  // simulation itself uses SOIL_RAW_DRY/WET.
+  soilDryMv: SOIL_RAW_DRY,
+  soilWetMv: SOIL_RAW_WET,
 };
 
 function targetAirTemp(h: number): number {
-  if (opts.hot) return 41 - (sim.fanOn ? 1.5 : 0); // the fan can't keep up
+  if (sim.hot) return 41 - (sim.fanOn ? 1.5 : 0); // the fan can't keep up
   return outsideTemp(h) + 6 * daylight(h) * sim.cloud - (sim.fanOn ? 4 : 0);
 }
 
@@ -122,7 +134,7 @@ function targetAirTemp(h: number): number {
 {
   const h = hourOfDay();
   // --hot starts just below the default airTempMax (35 °C) so alerts show up quickly.
-  sim.airTemp = opts.hot ? 34 : targetAirTemp(h);
+  sim.airTemp = sim.hot ? 34 : targetAirTemp(h);
   sim.humidity = clamp(90 - (sim.airTemp - 16) * 2.2, 25, 98);
   sim.lux = daylight(h) * 35_000 * sim.cloud;
   applyFanLogic();
@@ -143,16 +155,16 @@ function step(dt: number): void {
     daylight(h) > 0 ? daylight(h) * 35_000 * sim.cloud * (1 + noise(0.02)) : Math.random() * 3;
 
   // --hot heats fast (τ = 60 s): warning (>35 °C) after ~15 s, critical (≥38 °C) after ~80 s.
-  sim.airTemp = approach(sim.airTemp, targetAirTemp(h), dt, opts.hot ? 60 : 600) + noise(0.05);
+  sim.airTemp = approach(sim.airTemp, targetAirTemp(h), dt, sim.hot ? 60 : 600) + noise(0.05);
 
   const rhTarget = clamp(90 - (sim.airTemp - 16) * 2.2 - (sim.fanOn ? 6 : 0), 25, 98);
   sim.humidity = clamp(approach(sim.humidity, rhTarget, dt, 300) + noise(0.3), 0, 100);
 
   // Soil dries faster when warm; --dry makes it ~40 %/h for quick alerts.
-  const dryPerHour = (opts.dry ? 40 : 1.2) + Math.max(0, sim.airTemp - 20) * 0.15;
+  const dryPerHour = (sim.dry ? 40 : 1.2) + Math.max(0, sim.airTemp - 20) * 0.15;
   sim.soilMoisture = Math.max(5, sim.soilMoisture - (dryPerHour * dt) / 3600);
   const randomWatering = sim.soilMoisture < 55 && Math.random() < dt / (3 * 3600);
-  if (!opts.dry && (sim.soilMoisture < 32 || randomWatering)) {
+  if (!sim.dry && (sim.soilMoisture < 32 || randomWatering)) {
     const before = sim.soilMoisture;
     sim.soilMoisture = Math.min(85, sim.soilMoisture + 25 + Math.random() * 10);
     console.log(`💧 watering: soil ${before.toFixed(0)}% → ${sim.soilMoisture.toFixed(0)}%`);
@@ -162,6 +174,8 @@ function step(dt: number): void {
   applyFanLogic();
 }
 
+const startedAt = Date.now();
+
 function telemetryPayload() {
   const soilRaw = Math.round(
     SOIL_RAW_DRY - (sim.soilMoisture / 100) * (SOIL_RAW_DRY - SOIL_RAW_WET) + noise(8),
@@ -169,6 +183,9 @@ function telemetryPayload() {
   return {
     ts: Date.now(),
     intervalSec: opts.interval,
+    uptimeSec: Math.round((Date.now() - startedAt) / 1000),
+    // Dev-only marker: lets the backend's Demo tools tell this from real hardware.
+    simulator: true,
     airTemp: round(sim.airTemp, 1),
     humidity: round(sim.humidity, 1),
     soilMoisture: round(sim.soilMoisture, 1),
@@ -177,6 +194,11 @@ function telemetryPayload() {
     fanOn: sim.fanOn,
     fanMode: sim.fanMode,
     rssi: Math.round(sim.rssi),
+    // Thresholds in use: acknowledges setFanThresholds (like the firmware's NVS values).
+    fanOnTemp: sim.fanOnTemp,
+    fanOffTemp: sim.fanOffTemp,
+    soilDryMv: sim.soilDryMv,
+    soilWetMv: sim.soilWetMv,
   };
 }
 
@@ -206,11 +228,25 @@ function publishTelemetry(reason = ''): void {
   );
 }
 
+/** Commands delivered late (queued during a broker outage) are ignored (contract §4). */
+const MAX_COMMAND_AGE_MS = 30_000;
+
 function handleCommand(cmd: DeviceCommand): void {
+  const ageMs = Date.now() - Date.parse(cmd.issuedAt);
+  if (ageMs > MAX_COMMAND_AGE_MS) {
+    console.warn(`ignored stale ${cmd.type} (${Math.round(ageMs / 1000)} s old)`);
+    return;
+  }
   if (cmd.type === 'setFanMode') {
     sim.fanMode = cmd.mode;
     applyFanLogic();
     publishTelemetry(`setFanMode ${cmd.mode}`);
+  } else if (cmd.type === 'calibrateSoil') {
+    // Like the firmware: the current raw reading becomes the dry (0 %) / wet (100 %) point.
+    const raw = telemetryPayload().soilRaw;
+    if (cmd.point === 'dry') sim.soilDryMv = raw;
+    else sim.soilWetMv = raw;
+    publishTelemetry(`calibrateSoil ${cmd.point} = ${raw} mV`);
   } else {
     sim.fanOnTemp = cmd.fanOnTemp;
     sim.fanOffTemp = cmd.fanOffTemp;
@@ -219,10 +255,29 @@ function handleCommand(cmd: DeviceCommand): void {
   }
 }
 
+/** Demo sheet scenarios (backend DEV_TOOLS=true → POST /api/dev/simulate → this topic). */
+function handleScenario(scenario: SimScenario): void {
+  if (scenario === 'heatwave') {
+    sim.hot = true;
+    sim.airTemp = Math.max(sim.airTemp, 33.1); // already past the fan-ON point, critical (>= 38) within ~30 s
+  } else if (scenario === 'drysoil') {
+    sim.dry = true;
+    sim.soilMoisture = Math.min(sim.soilMoisture, 27); // below the default 30 % limit
+  } else {
+    sim.hot = false;
+    sim.dry = false;
+    sim.airTemp = Math.min(sim.airTemp, 27); // back to comfortable (the fan switches off)
+    sim.soilMoisture = Math.max(sim.soilMoisture, 60);
+  }
+  applyFanLogic();
+  publishTelemetry(`scenario ${scenario}`);
+}
+
 client.on('connect', () => {
   console.log(`connected to ${opts.url} as ${opts.device} (interval ${opts.interval}s)`);
   client.publish(statusTopic, 'online', { qos: 1, retain: true });
   client.subscribe(topics.command(opts.device), { qos: 1 });
+  client.subscribe(topics.sim(opts.device), { qos: 1 });
   publishTelemetry('connected');
   timer ??= setInterval(() => {
     step(opts.interval);
@@ -230,12 +285,18 @@ client.on('connect', () => {
   }, opts.interval * 1000);
 });
 
-client.on('message', (_topic, payload) => {
+client.on('message', (topic, payload) => {
   let json: unknown;
   try {
     json = JSON.parse(payload.toString('utf8'));
   } catch {
     json = undefined;
+  }
+  if (topic === topics.sim(opts.device)) {
+    const scenario = SimScenarioSchema.safeParse(json);
+    if (scenario.success) handleScenario(scenario.data.scenario);
+    else console.warn(`rejected scenario: ${payload.toString('utf8').slice(0, 120)}`);
+    return;
   }
   const cmd = DeviceCommandSchema.safeParse(json);
   if (!cmd.success) {
@@ -280,6 +341,6 @@ process.on('SIGINT', () => {
 });
 
 console.log(
-  `simulator ${opts.device}: ${opts.hot ? 'HOT ' : ''}${opts.dry ? 'DRY ' : ''}— Ctrl+C to stop` +
+  `simulator ${opts.device}: ${sim.hot ? 'HOT ' : ''}${sim.dry ? 'DRY ' : ''}— Ctrl+C to stop` +
     (opts.crash ? ' (crash mode)' : ''),
 );

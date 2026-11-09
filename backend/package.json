@@ -20,13 +20,16 @@
     "db:deploy": "prisma migrate deploy",
     "db:studio": "prisma studio",
     "socket:watch": "tsx scripts/watch-socket.ts",
+    "sms:check": "tsx scripts/sms-check.ts",
     "sim": "tsx scripts/simulator.ts",
+    "seed:history": "tsx scripts/seed-history.ts",
     "test": "tsx --test \"src/**/*.test.ts\"",
     "postinstall": "prisma generate"
   },
   "dependencies": {
     "@prisma/adapter-better-sqlite3": "^7.10.1",
     "@prisma/client": "^7.10.1",
+    "expo-server-sdk": "^8.0.0",
     "express": "^5.3.0",
     "mqtt": "^5.16.1",
     "socket.io": "^4.8.4",

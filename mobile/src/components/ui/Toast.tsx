@@ -1,4 +1,3 @@
-import Ionicons from '@expo/vector-icons/Ionicons';
 import {
   createContext,
   useCallback,
@@ -9,51 +8,69 @@ import {
   useState,
   type ReactNode,
 } from 'react';
-import { AccessibilityInfo, Animated, Pressable, StyleSheet, View } from 'react-native';
+import { AccessibilityInfo, Pressable, StyleSheet, View } from 'react-native';
+import Animated, {
+  Easing,
+  useSharedValue,
+  useAnimatedStyle,
+  withTiming,
+} from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { useTheme } from '@/theme';
+import { cardShadow, useTheme, type StatusTone } from '@/theme';
 import { useReducedMotion } from '@/utils/useReducedMotion';
 
-import type { IconName } from './Button';
+import type { IconName } from './Icon';
+import { IconTile } from './IconTile';
 import { Text } from './Text';
 
-export type ToastTone = 'success' | 'error' | 'info';
+export type ToastTone = 'success' | 'error' | 'info' | 'warning';
 
-interface ToastMessage {
+interface ToastOptions {
+  /** Bold first line; the message becomes the detail line. */
+  title?: string;
+  /** Tap action (e.g. open the Alerts tab). Tapping always dismisses. */
+  onPress?: () => void;
+}
+
+interface ToastMessage extends ToastOptions {
   id: number;
   message: string;
   tone: ToastTone;
 }
 
 interface ToastApi {
-  show: (message: string, tone?: ToastTone) => void;
+  show: (message: string, tone?: ToastTone, options?: ToastOptions) => void;
 }
 
 const ToastContext = createContext<ToastApi | null>(null);
 
-const DURATION_MS = 3000;
-const ICONS: Record<ToastTone, IconName> = {
-  success: 'checkmark-circle',
-  error: 'alert-circle',
-  info: 'information-circle',
+const DURATION_MS = 3500;
+const VISUAL: Record<ToastTone, { icon: IconName; tone: StatusTone }> = {
+  success: { icon: 'checkmark', tone: 'ok' },
+  error: { icon: 'alert-circle-outline', tone: 'danger' },
+  info: { icon: 'information-circle-outline', tone: 'info' },
+  warning: { icon: 'warning-outline', tone: 'warning' },
 };
 
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [toast, setToast] = useState<ToastMessage | null>(null);
   const nextId = useRef(1);
 
-  const show = useCallback((message: string, tone: ToastTone = 'info') => {
-    setToast({ id: nextId.current++, message, tone });
-    AccessibilityInfo.announceForAccessibility(message);
+  const show = useCallback((message: string, tone: ToastTone = 'info', options?: ToastOptions) => {
+    setToast({ id: nextId.current++, message, tone, ...options });
+    AccessibilityInfo.announceForAccessibility(
+      options?.title ? `${options.title}. ${message}` : message,
+    );
   }, []);
 
   const api = useMemo(() => ({ show }), [show]);
+  const hide = useCallback(() => setToast(null), []);
 
   return (
     <ToastContext.Provider value={api}>
       {children}
-      {toast ? <ToastView key={toast.id} toast={toast} onHide={() => setToast(null)} /> : null}
+      {toast ? <ToastView key={toast.id} toast={toast} onHide={hide} /> : null}
     </ToastContext.Provider>
   );
 }
@@ -64,58 +81,63 @@ export function useToast(): ToastApi {
   return ctx;
 }
 
+/** Slides in from the top as a light card; tap or wait to dismiss. */
 function ToastView({ toast, onHide }: { toast: ToastMessage; onHide: () => void }) {
   const theme = useTheme();
   const insets = useSafeAreaInsets();
   const reducedMotion = useReducedMotion();
-  const [anim] = useState(() => new Animated.Value(0));
+  const progress = useSharedValue(0);
 
   useEffect(() => {
-    const duration = reducedMotion ? 0 : 180;
-    Animated.timing(anim, { toValue: 1, duration, useNativeDriver: true }).start();
-    const timer = setTimeout(() => {
-      Animated.timing(anim, { toValue: 0, duration, useNativeDriver: true }).start(() => onHide());
-    }, DURATION_MS);
+    const duration = reducedMotion ? 0 : 260;
+    progress.set(withTiming(1, { duration, easing: Easing.out(Easing.cubic) }));
+    const timer = setTimeout(onHide, DURATION_MS);
     return () => clearTimeout(timer);
-  }, [anim, onHide, reducedMotion]);
+  }, [progress, onHide, reducedMotion]);
 
-  // Inverted surface so the toast stands out in both themes.
-  const iconColor =
-    toast.tone === 'error'
-      ? theme.colors.danger
-      : toast.tone === 'success'
-        ? theme.colors.accent
-        : theme.colors.textTertiary;
+  const style = useAnimatedStyle(() => ({
+    opacity: progress.value,
+    transform: [{ translateY: (1 - progress.value) * -24 }],
+  }));
+
+  const v = VISUAL[toast.tone];
+  const press = () => {
+    toast.onPress?.();
+    onHide();
+  };
 
   return (
     <View pointerEvents="box-none" style={[styles.host, { top: insets.top + 8 }]}>
-      <Animated.View
-        style={{
-          opacity: anim,
-          transform: [
-            { translateY: anim.interpolate({ inputRange: [0, 1], outputRange: [-16, 0] }) },
-          ],
-        }}
-      >
+      <Animated.View style={[styles.wrap, style]}>
         <Pressable
-          onPress={onHide}
+          onPress={press}
           accessibilityRole="alert"
-          accessibilityLabel={toast.message}
-          accessibilityHint="Dismisses the message"
+          accessibilityLabel={toast.title ? `${toast.title}. ${toast.message}` : toast.message}
+          accessibilityHint={toast.onPress ? 'Opens details' : 'Dismisses the message'}
           style={[
             styles.toast,
-            { backgroundColor: theme.colors.overlay, borderRadius: theme.radii.md },
+            {
+              backgroundColor: theme.colors.overlay,
+              borderColor: theme.colors.border,
+              boxShadow: cardShadow(theme),
+            },
           ]}
         >
-          <Ionicons name={ICONS[toast.tone]} size={22} color={iconColor} />
-          <Text
-            variant="bodyStrong"
-            tint={theme.colors.background}
-            style={styles.message}
-            numberOfLines={3}
-          >
-            {toast.message}
-          </Text>
+          <IconTile icon={v.icon} tone={v.tone} size={36} />
+          <View style={styles.text}>
+            {toast.title ? (
+              <Text variant="bodyStrong" numberOfLines={1}>
+                {toast.title}
+              </Text>
+            ) : null}
+            <Text
+              variant={toast.title ? 'caption' : 'bodyStrong'}
+              color={toast.title ? 'secondary' : 'primary'}
+              numberOfLines={3}
+            >
+              {toast.message}
+            </Text>
+          </View>
         </Pressable>
       </Animated.View>
     </View>
@@ -124,15 +146,16 @@ function ToastView({ toast, onHide }: { toast: ToastMessage; onHide: () => void 
 
 const styles = StyleSheet.create({
   host: { position: 'absolute', left: 16, right: 16, alignItems: 'center' },
+  wrap: { alignSelf: 'stretch', maxWidth: 480 },
   toast: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
-    minHeight: 48,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    maxWidth: 480,
-    elevation: 6,
+    gap: 12,
+    minHeight: 56,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 18,
+    borderWidth: StyleSheet.hairlineWidth,
   },
-  message: { flexShrink: 1 },
+  text: { flex: 1, gap: 1 },
 });

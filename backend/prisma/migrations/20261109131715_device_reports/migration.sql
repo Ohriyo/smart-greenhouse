@@ -1,0 +1,6 @@
+-- AlterTable
+ALTER TABLE "Device" ADD COLUMN "rssi" INTEGER;
+ALTER TABLE "Device" ADD COLUMN "soilDryMv" INTEGER;
+ALTER TABLE "Device" ADD COLUMN "soilWetMv" INTEGER;
+ALTER TABLE "Device" ADD COLUMN "uptimeAt" DATETIME;
+ALTER TABLE "Device" ADD COLUMN "uptimeSec" INTEGER;

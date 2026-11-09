@@ -9,11 +9,14 @@ export interface NewAlert {
   severity: Severity;
   metric: AlertMetric | null;
   value: number | null;
+  /** The limit that was crossed (breach alerts only). */
+  limit?: number | null;
   message: string;
 }
 
 export function insertAlert(a: NewAlert): Promise<Alert> {
-  return prisma.alert.create({ data: { ...a, ts: new Date() } });
+  const { limit, ...rest } = a;
+  return prisma.alert.create({ data: { ...rest, limitValue: limit ?? null, ts: new Date() } });
 }
 
 /** Latest breach alert and latest recovered alert of one metric (restores rule state). */

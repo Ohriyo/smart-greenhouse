@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react';
 
 /** "just now", "12 s ago", "5 min ago", "3 h ago", "2 d ago". */
-export function formatRelative(iso: string | null, now: number): string {
-  if (!iso) return 'never';
-  const diffSec = Math.max(0, Math.round((now - Date.parse(iso)) / 1000));
+export function formatRelative(time: string | number | null, now: number): string {
+  if (time === null || time === '') return 'never';
+  const ms = typeof time === 'number' ? time : Date.parse(time);
+  const diffSec = Math.max(0, Math.round((now - ms) / 1000));
   if (diffSec < 5) return 'just now';
   if (diffSec < 60) return `${diffSec} s ago`;
   const min = Math.floor(diffSec / 60);
@@ -14,8 +15,8 @@ export function formatRelative(iso: string | null, now: number): string {
 }
 
 /** Spoken form for screen readers ("12 seconds ago"). */
-export function formatRelativeSpoken(iso: string | null, now: number): string {
-  return formatRelative(iso, now)
+export function formatRelativeSpoken(time: string | number | null, now: number): string {
+  return formatRelative(time, now)
     .replace(' s ago', ' seconds ago')
     .replace(' min ago', ' minutes ago')
     .replace(' h ago', ' hours ago')
@@ -49,4 +50,35 @@ export function useNow(intervalMs = 1000): number {
     return () => clearInterval(id);
   }, [intervalMs]);
   return now;
+}
+
+/** "2h 18m", "45m", "0m" (seconds → hours and minutes). */
+export function formatDuration(totalSec: number): string {
+  const min = Math.round(totalSec / 60);
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+  if (h === 0) return `${m}m`;
+  return m === 0 ? `${h}h` : `${h}h ${m}m`;
+}
+
+/** Spoken form: "2 hours 18 minutes". */
+export function formatDurationSpoken(totalSec: number): string {
+  const min = Math.round(totalSec / 60);
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+  const hours = h > 0 ? `${h} hour${h === 1 ? '' : 's'}` : '';
+  const mins = m > 0 || h === 0 ? `${m} minute${m === 1 ? '' : 's'}` : '';
+  return [hours, mins].filter(Boolean).join(' ');
+}
+
+/** Device uptime: "12d 7h", "3h 20m", "5m", "40s". */
+export function formatUptime(totalSec: number): string {
+  const sec = Math.max(0, Math.floor(totalSec));
+  const d = Math.floor(sec / 86_400);
+  const h = Math.floor((sec % 86_400) / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  if (d > 0) return `${d}d ${h}h`;
+  if (h > 0) return `${h}h ${m}m`;
+  if (m > 0) return `${m}m`;
+  return `${sec}s`;
 }

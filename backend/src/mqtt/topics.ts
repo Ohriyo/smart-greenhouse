@@ -4,6 +4,8 @@ export const topics = {
   telemetry: (deviceId: string) => `greenhouse/${deviceId}/telemetry`,
   status: (deviceId: string) => `greenhouse/${deviceId}/status`,
   command: (deviceId: string) => `greenhouse/${deviceId}/command`,
+  /** Dev-only: Demo scenarios for the simulator (never used by the real firmware). */
+  sim: (deviceId: string) => `greenhouse/${deviceId}/sim`,
 };
 
 export const SUBSCRIPTIONS = ['greenhouse/+/telemetry', 'greenhouse/+/status'];

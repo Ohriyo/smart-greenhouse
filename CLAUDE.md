@@ -20,7 +20,7 @@ Target: ANDROID ONLY. Do not add iOS-specific config or code. Test device: my An
 backend/ (Node + TS, includes simulator) · mobile/ (Expo app) · firmware/ (PlatformIO) · docs/
 
 ## Mobile stack
-Expo + TypeScript strict, Expo Router (tabs), TanStack Query, Zustand, socket.io-client (match backend major), fetch wrapper (no axios), Zod (mirrors docs/api-contract.md), react-native-gifted-charts, @expo/vector-icons, expo-notifications + expo-device, AsyncStorage, @react-native-community/netinfo. Use `npx expo install`.
+Expo + TypeScript strict, Expo Router (tabs), TanStack Query, Zustand, socket.io-client (match backend major), fetch wrapper (no axios), Zod (mirrors docs/api-contract.md), react-native-svg (all charts, drawn in src/components/ui), react-native-reanimated + react-native-gesture-handler (animation, gestures), @expo-google-fonts/inter, @expo/vector-icons, expo-notifications + expo-device, AsyncStorage, @react-native-community/netinfo. Use `npx expo install`.
 Structure: app/ (routes only: _layout, (tabs)/index=Dashboard, history, alerts, control, settings) · src/{components/ui, components/greenhouse, features, services/api, services/realtime, services/notifications, store, types, theme, constants, utils} · assets/
 
 ## Rules

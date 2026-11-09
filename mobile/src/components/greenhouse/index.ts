@@ -1,7 +1,10 @@
-export { AlertRow } from './AlertRow';
+export { AlertCard } from './AlertCard';
 export { ConnectionBanner, type ConnectionState } from './ConnectionBanner';
-export { FanStatusCard } from './FanStatusCard';
-export { LiveFanCard, LiveSensorCard } from './LiveCards';
-export { MiniBarChart } from './MiniBarChart';
+export { EnableNotificationsCard } from './EnableNotificationsCard';
+export { FanModeControl } from './FanModeControl';
+export { FanHero } from './FanHero';
 export { SensorCard } from './SensorCard';
+export { ThresholdSyncStatus } from './ThresholdSyncStatus';
 export { UpdatedAgo } from './UpdatedAgo';
+export { SignalBars } from './SignalBars';
+export { ThemePreview } from './ThemePreview';

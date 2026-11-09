@@ -11,6 +11,9 @@ export type ErrorCode =
   | 'NOT_FOUND'
   | 'DEVICE_OFFLINE'
   | 'BROKER_UNAVAILABLE'
+  | 'SMS_NOT_CONFIGURED'
+  | 'NOT_SIMULATED'
+  | 'RATE_LIMITED'
   | 'INTERNAL_ERROR';
 
 export interface ErrorDetail {

@@ -1,4 +1,4 @@
-import { toAlertDto } from '../domain/dto.js';
+import { toAlertDto, type AlertDto } from '../domain/dto.js';
 import { ALERT_METRICS, SeveritySchema, type AlertMetric } from '../domain/schemas.js';
 import type { Device, Reading, Thresholds } from '../generated/prisma/client.js';
 import { createLogger } from '../lib/logger.js';
@@ -48,14 +48,21 @@ export interface RulesEngine {
   deviceCameOnline(device: Device): Promise<void>;
 }
 
-export function createRulesEngine(opts: { realtime: Realtime; cooldownMs: number }): RulesEngine {
-  const { realtime, cooldownMs } = opts;
+export function createRulesEngine(opts: {
+  realtime: Realtime;
+  cooldownMs: number;
+  /** Called for every new alert (push notifications). Must not throw; not awaited. */
+  onAlert?: (alert: AlertDto) => void;
+}): RulesEngine {
+  const { realtime, cooldownMs, onAlert } = opts;
   const states = new Map<string, MetricState>();
 
   async function raise(alert: NewAlert): Promise<void> {
     const saved = await insertAlert(alert);
     log.info(`[${saved.severity}] ${saved.deviceId}: ${saved.message}`);
-    realtime.emitAlert(toAlertDto(saved));
+    const dto = toAlertDto(saved);
+    realtime.emitAlert(dto); // app open: live list + toast
+    onAlert?.(dto); // app closed: push notification (in the background, never blocks ingest)
   }
 
   /** In-memory state, restored from the alert table after a restart. */
@@ -102,6 +109,8 @@ export function createRulesEngine(opts: { realtime: Realtime; cooldownMs: number
             severity: result.alert.severity,
             metric,
             value,
+            // Only breach alerts carry the limit that was crossed.
+            limit: result.alert.type === 'recovered' ? null : result.alert.limit,
             message: messageFor(metric, result.alert, value),
           });
         }

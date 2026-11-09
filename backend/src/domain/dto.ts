@@ -19,6 +19,18 @@ export interface DeviceDto {
   lastSeen: string | null;
   createdAt: string;
   telemetryIntervalSec: number | null;
+  /** Fan thresholds the device last reported using; null if it never reported them. */
+  reportedFanOnTemp: number | null;
+  reportedFanOffTemp: number | null;
+  reportedFanThresholdsAt: string | null;
+  /** Latest Wi-Fi signal (dBm) the device reported; null if never. */
+  rssi: number | null;
+  /** Seconds since boot as reported at `uptimeAt` (uptime now ≈ uptimeSec + (now − uptimeAt)). */
+  uptimeSec: number | null;
+  uptimeAt: string | null;
+  /** Soil calibration the device reports using (mV); null if never reported. */
+  soilDryMv: number | null;
+  soilWetMv: number | null;
 }
 
 export interface AlertDto {
@@ -29,6 +41,8 @@ export interface AlertDto {
   severity: Severity;
   metric: AlertMetric | null;
   value: number | null;
+  /** The limit that was crossed (breach alerts); null for recovered/offline/online and old alerts. */
+  limit: number | null;
   message: string;
   readAt: string | null;
 }
@@ -78,6 +92,14 @@ export function toDeviceDto(d: Device): DeviceDto {
     lastSeen: d.lastSeen?.toISOString() ?? null,
     createdAt: d.createdAt.toISOString(),
     telemetryIntervalSec: d.telemetryIntervalSec,
+    reportedFanOnTemp: d.reportedFanOnTemp,
+    reportedFanOffTemp: d.reportedFanOffTemp,
+    reportedFanThresholdsAt: d.reportedFanThresholdsAt?.toISOString() ?? null,
+    rssi: d.rssi,
+    uptimeSec: d.uptimeSec,
+    uptimeAt: d.uptimeAt?.toISOString() ?? null,
+    soilDryMv: d.soilDryMv,
+    soilWetMv: d.soilWetMv,
   };
 }
 
@@ -90,6 +112,7 @@ export function toAlertDto(a: Alert): AlertDto {
     severity: SeveritySchema.parse(a.severity),
     metric: a.metric === null ? null : AlertMetricSchema.parse(a.metric),
     value: a.value,
+    limit: a.limitValue,
     message: a.message,
     readAt: a.readAt?.toISOString() ?? null,
   };

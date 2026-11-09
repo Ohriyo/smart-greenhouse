@@ -30,6 +30,11 @@ yarn-error.*
 .DS_Store
 *.pem
 
+# Firebase service account key (FCM V1) — a real secret, uploaded with `eas credentials`.
+# google-services.json is NOT secret and must stay committed: EAS Build only uploads tracked files.
+*firebase-adminsdk*.json
+fcm-service-account*.json
+
 # local env files (.env.example is committed)
 .env
 .env*.local

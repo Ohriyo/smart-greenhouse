@@ -1,28 +1,25 @@
-import Ionicons from '@expo/vector-icons/Ionicons';
 import { StyleSheet, View } from 'react-native';
 
-import { useTheme } from '@/theme';
+import { type StatusTone } from '@/theme';
 
-import { Button, type IconName } from './Button';
+import { Button } from './Button';
+import type { IconName } from './Icon';
+import { IconTile } from './IconTile';
 import { Text } from './Text';
 
 interface EmptyStateProps {
   icon: IconName;
   title: string;
   message?: string;
+  tone?: StatusTone;
   action?: { label: string; onPress: () => void };
 }
 
-export function EmptyState({ icon, title, message, action }: EmptyStateProps) {
-  const theme = useTheme();
+/** "No alerts — your greenhouse is happy". */
+export function EmptyState({ icon, title, message, tone = 'accent', action }: EmptyStateProps) {
   return (
-    <View style={[styles.container, { padding: theme.spacing.xl }]}>
-      <View
-        style={[styles.iconWrap, { backgroundColor: theme.colors.surfaceMuted }]}
-        importantForAccessibility="no-hide-descendants"
-      >
-        <Ionicons name={icon} size={28} color={theme.colors.textSecondary} />
-      </View>
+    <View style={styles.container}>
+      <IconTile icon={icon} tone={tone} size={56} shape="circle" />
       <Text variant="heading" style={styles.center} accessibilityRole="header">
         {title}
       </Text>
@@ -31,20 +28,20 @@ export function EmptyState({ icon, title, message, action }: EmptyStateProps) {
           {message}
         </Text>
       ) : null}
-      {action ? <Button label={action.label} onPress={action.onPress} variant="secondary" /> : null}
+      {action ? (
+        <Button
+          label={action.label}
+          onPress={action.onPress}
+          variant="secondary"
+          style={styles.action}
+        />
+      ) : null}
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { alignItems: 'center', justifyContent: 'center', gap: 10 },
-  iconWrap: {
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 4,
-  },
+  container: { alignItems: 'center', justifyContent: 'center', gap: 8, padding: 24 },
   center: { textAlign: 'center' },
+  action: { alignSelf: 'center', marginTop: 8 },
 });

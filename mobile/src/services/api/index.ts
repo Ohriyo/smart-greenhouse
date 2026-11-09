@@ -3,6 +3,7 @@ export { api } from './endpoints';
 export {
   ApiError,
   describeError,
+  errorTitle,
   HttpError,
   NetworkError,
   TimeoutError,

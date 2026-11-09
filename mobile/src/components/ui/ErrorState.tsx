@@ -1,9 +1,7 @@
-import Ionicons from '@expo/vector-icons/Ionicons';
 import { StyleSheet, View } from 'react-native';
 
-import { useTheme } from '@/theme';
-
 import { Button } from './Button';
+import { IconTile } from './IconTile';
 import { Text } from './Text';
 
 interface ErrorStateProps {
@@ -13,24 +11,16 @@ interface ErrorStateProps {
   retrying?: boolean;
 }
 
+/** Friendly error with a pill "Retry" button. */
 export function ErrorState({
   title = 'Something went wrong',
   message,
   onRetry,
   retrying = false,
 }: ErrorStateProps) {
-  const theme = useTheme();
   return (
-    <View
-      style={[styles.container, { padding: theme.spacing.xl }]}
-      accessibilityLiveRegion="polite"
-    >
-      <View
-        style={[styles.iconWrap, { backgroundColor: theme.colors.dangerSoft }]}
-        importantForAccessibility="no-hide-descendants"
-      >
-        <Ionicons name="cloud-offline-outline" size={28} color={theme.colors.danger} />
-      </View>
+    <View style={styles.container} accessibilityLiveRegion="polite">
+      <IconTile icon="cloud-offline-outline" tone="danger" size={56} shape="circle" />
       <Text variant="heading" style={styles.center} accessibilityRole="header">
         {title}
       </Text>
@@ -38,21 +28,21 @@ export function ErrorState({
         {message}
       </Text>
       {onRetry ? (
-        <Button label="Try again" icon="refresh" onPress={onRetry} loading={retrying} />
+        <Button
+          label="Retry"
+          icon="refresh"
+          variant="secondary"
+          onPress={onRetry}
+          loading={retrying}
+          style={styles.action}
+        />
       ) : null}
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { alignItems: 'center', justifyContent: 'center', gap: 10 },
-  iconWrap: {
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 4,
-  },
+  container: { alignItems: 'center', justifyContent: 'center', gap: 8, padding: 24 },
   center: { textAlign: 'center' },
+  action: { alignSelf: 'center', marginTop: 8 },
 });

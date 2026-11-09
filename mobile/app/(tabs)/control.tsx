@@ -1,283 +1,163 @@
-import { useState } from 'react';
-import { StyleSheet, View } from 'react-native';
+import { router } from 'expo-router';
+import { useCallback, useState } from 'react';
+import { RefreshControl, StyleSheet, View } from 'react-native';
 
-import { ConnectionBanner } from '@/components/greenhouse';
-import {
-  Button,
-  Card,
-  Screen,
-  SegmentedControl,
-  StatusPill,
-  Stepper,
-  Text,
-  useToast,
-  type SegmentOption,
-} from '@/components/ui';
-import { mockOfflineLastSeen, mockReading, mockThresholds } from '@/constants/mock';
-import { useMockStore } from '@/store/mockStore';
+import { Card, EmptyState, ErrorState, Screen, Skeleton } from '@/components/ui';
+import { CalibrationCard } from '@/features/control/CalibrationCard';
+import { ControlFanHero } from '@/features/control/ControlFanHero';
+import { ThresholdsSection } from '@/features/control/ThresholdsSection';
+import { LiveBanner } from '@/features/dashboard/LiveBanner';
+import { useDevicesQuery, useLatestQuery, useThresholdsQuery } from '@/features/dashboard/queries';
+import { useIsLive } from '@/features/dashboard/useLiveness';
+import { describeError, errorTitle } from '@/services/api';
+import { useLiveStore } from '@/store/liveStore';
+import { useSettingsStore } from '@/store/settingsStore';
 import { useTheme } from '@/theme';
-import { ThresholdsUpdateSchema, type FanMode, type ThresholdsUpdate } from '@/types/api';
-import { formatValue } from '@/utils/sensors';
 
-const MODE_OPTIONS: readonly SegmentOption<FanMode>[] = [
-  { value: 'auto', label: 'Auto', accessibilityLabel: 'Automatic' },
-  { value: 'on', label: 'On', accessibilityLabel: 'Force on' },
-  { value: 'off', label: 'Off', accessibilityLabel: 'Force off' },
-];
-const MODE_LABEL: Record<FanMode, string> = { auto: 'Auto', on: 'Forced on', off: 'Forced off' };
-
-/** Simulated command round-trip (send → device applies → confirmed in telemetry). */
-const MOCK_CONFIRM_MS = 1200;
-
-function toUpdate(t: typeof mockThresholds): ThresholdsUpdate {
-  return {
-    fanOnTemp: t.fanOnTemp,
-    fanOffTemp: t.fanOffTemp,
-    airTempMin: t.airTempMin,
-    airTempMax: t.airTempMax,
-    humidityMin: t.humidityMin,
-    humidityMax: t.humidityMax,
-    soilMoistureMin: t.soilMoistureMin,
-    soilMoistureMax: t.soilMoistureMax,
-    luxMin: t.luxMin,
-    luxMax: t.luxMax,
-  };
-}
-
+/** Control: fan hero (Auto/On/Off), fan thresholds, sensor limits, soil calibration. */
 export default function ControlScreen() {
   const theme = useTheme();
-  const toast = useToast();
-  const scenario = useMockStore((s) => s.scenario);
-  const online = scenario === 'normal' || scenario === 'loading';
+  const apiUrl = useSettingsStore((s) => s.apiUrl);
+  const hydrated = useSettingsStore((s) => s.hydrated);
 
-  // Fan mode: the UI shows only the *confirmed* mode; the selector is a draft.
-  const [confirmedMode, setConfirmedMode] = useState<FanMode>(mockReading.fanMode);
-  const [draftMode, setDraftMode] = useState<FanMode>(mockReading.fanMode);
-  const [sending, setSending] = useState(false);
+  const devicesQuery = useDevicesQuery();
+  const deviceId = useLiveStore((s) => s.deviceIds[0]);
+  const latestQuery = useLatestQuery(deviceId);
+  const thresholdsQuery = useThresholdsQuery(deviceId);
 
-  const [saved, setSaved] = useState<ThresholdsUpdate>(() => toUpdate(mockThresholds));
-  const [draft, setDraft] = useState<ThresholdsUpdate>(saved);
-  const [saving, setSaving] = useState(false);
-  const dirty = JSON.stringify(draft) !== JSON.stringify(saved);
+  // Primitive selectors: the screen re-renders only when these values change.
+  const reportedOn = useLiveStore(
+    (s) => (deviceId ? s.devices[deviceId]?.reportedFanOnTemp : null) ?? null,
+  );
+  const reportedOff = useLiveStore(
+    (s) => (deviceId ? s.devices[deviceId]?.reportedFanOffTemp : null) ?? null,
+  );
+  const reportedAt = useLiveStore(
+    (s) => (deviceId ? s.devices[deviceId]?.reportedFanThresholdsAt : null) ?? null,
+  );
+  const live = useIsLive(deviceId);
 
-  const set = <K extends keyof ThresholdsUpdate>(key: K, value: ThresholdsUpdate[K]) =>
-    setDraft((d) => ({ ...d, [key]: value }));
+  const [refreshing, setRefreshing] = useState(false);
+  const { refetch: refetchDevices } = devicesQuery;
+  const { refetch: refetchLatest } = latestQuery;
+  const { refetch: refetchThresholds } = thresholdsQuery;
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    await Promise.allSettled([refetchDevices(), refetchLatest(), refetchThresholds()]);
+    setRefreshing(false);
+  }, [refetchDevices, refetchLatest, refetchThresholds]);
 
-  const applyMode = () => {
-    setSending(true);
-    setTimeout(() => {
-      setSending(false);
-      setConfirmedMode(draftMode);
-      toast.show(`Fan set to ${MODE_LABEL[draftMode]} (confirmed)`, 'success');
-    }, MOCK_CONFIRM_MS);
-  };
+  const refreshControl = (
+    <RefreshControl
+      refreshing={refreshing}
+      onRefresh={() => void onRefresh()}
+      colors={[theme.colors.accent]}
+      progressBackgroundColor={theme.colors.surface}
+    />
+  );
 
-  const saveThresholds = () => {
-    const result = ThresholdsUpdateSchema.safeParse(draft);
-    if (!result.success) {
-      toast.show(result.error.issues[0]?.message ?? 'Invalid values', 'error');
-      return;
+  if (hydrated && !apiUrl) {
+    return (
+      <Screen title="Control" subtitle="Not connected">
+        <EmptyState
+          icon="server-outline"
+          title="Set your server address"
+          message="Enter your laptop's address in Settings to control the greenhouse."
+          action={{ label: 'Open Settings', onPress: () => router.push('/settings') }}
+        />
+      </Screen>
+    );
+  }
+
+  if (!deviceId) {
+    if (devicesQuery.isError && !devicesQuery.isFetching) {
+      return (
+        <Screen
+          title="Control"
+          subtitle="Fan and greenhouse thresholds"
+          refreshControl={refreshControl}
+        >
+          <ErrorState
+            title={errorTitle(devicesQuery.error)}
+            message={describeError(devicesQuery.error)}
+            onRetry={() => void onRefresh()}
+            retrying={refreshing}
+          />
+        </Screen>
+      );
     }
-    setSaving(true);
-    setTimeout(() => {
-      setSaving(false);
-      setSaved(result.data);
-      toast.show('Thresholds saved and sent to the greenhouse', 'success');
-    }, MOCK_CONFIRM_MS);
-  };
+    if (devicesQuery.isSuccess && devicesQuery.data.length === 0) {
+      return (
+        <Screen
+          title="Control"
+          subtitle="Fan and greenhouse thresholds"
+          refreshControl={refreshControl}
+        >
+          <EmptyState
+            icon="leaf-outline"
+            title="No greenhouse yet"
+            message="Power on the ESP32 or start the simulator. It appears here automatically."
+            action={{ label: 'Refresh', onPress: () => void onRefresh() }}
+          />
+        </Screen>
+      );
+    }
+    return (
+      <Screen title="Control" subtitle="Fan and greenhouse thresholds">
+        <LoadingCards />
+      </Screen>
+    );
+  }
 
   return (
     <Screen
       title="Control"
-      subtitle="Fan and alert thresholds"
+      subtitle="Fan and greenhouse thresholds"
       banner={
-        <ConnectionBanner
-          state={
-            online ? 'connected' : scenario === 'error' ? 'backend-unreachable' : 'device-offline'
-          }
-          lastSeen={mockOfflineLastSeen}
-        />
+        <LiveBanner deviceId={deviceId} restFailed={devicesQuery.isError || latestQuery.isError} />
       }
+      refreshControl={refreshControl}
     >
-      <Card style={styles.section}>
-        <View style={styles.sectionHeader}>
-          <Text variant="heading" accessibilityRole="header">
-            Fan mode
-          </Text>
-          <StatusPill
-            tone={confirmedMode === 'auto' ? 'accent' : 'warning'}
-            label={MODE_LABEL[confirmedMode]}
-            accessibilityLabel={`Current mode: ${MODE_LABEL[confirmedMode]}`}
+      <ControlFanHero deviceId={deviceId} />
+
+      {thresholdsQuery.data ? (
+        <ThresholdsSection
+          deviceId={deviceId}
+          saved={thresholdsQuery.data}
+          online={live}
+          reportedOn={reportedOn}
+          reportedOff={reportedOff}
+          reportedAt={reportedAt}
+        />
+      ) : thresholdsQuery.isError ? (
+        <Card>
+          <ErrorState
+            title="Couldn't load thresholds"
+            message={describeError(thresholdsQuery.error)}
+            onRetry={() => void refetchThresholds()}
+            retrying={thresholdsQuery.isFetching}
           />
-        </View>
-        <SegmentedControl
-          options={MODE_OPTIONS}
-          value={draftMode}
-          onChange={setDraftMode}
-          accessibilityLabel="Fan mode"
-          disabled={!online || sending}
-        />
-        <Text variant="caption" color="secondary">
-          {draftMode === 'auto'
-            ? `The greenhouse switches the fan on at ${formatValue(draft.fanOnTemp, 1)} °C and off at ${formatValue(draft.fanOffTemp, 1)} °C, even without Wi-Fi.`
-            : `Manual override: the fan stays ${draftMode} until you switch back to Auto.`}
-        </Text>
-        <Button
-          label={sending ? 'Waiting for confirmation…' : 'Apply'}
-          onPress={applyMode}
-          loading={sending}
-          disabled={!online || draftMode === confirmedMode}
-          fullWidth
-        />
-      </Card>
+        </Card>
+      ) : (
+        <Skeleton height={320} radius={theme.radii.lg} />
+      )}
 
-      <Card style={styles.section}>
-        <Text variant="heading" accessibilityRole="header">
-          Fan thresholds
-        </Text>
-        <Stepper
-          label="Turn on at"
-          value={draft.fanOnTemp}
-          onChange={(v) => set('fanOnTemp', v)}
-          step={0.5}
-          min={Math.max(10, draft.fanOffTemp + 1)}
-          max={50}
-          unit="°C"
-          decimals={1}
-        />
-        <Stepper
-          label="Turn off at"
-          value={draft.fanOffTemp}
-          onChange={(v) => set('fanOffTemp', v)}
-          step={0.5}
-          min={10}
-          max={Math.min(50, draft.fanOnTemp - 1)}
-          unit="°C"
-          decimals={1}
-        />
-      </Card>
-
-      <Card style={styles.section}>
-        <Text variant="heading" accessibilityRole="header">
-          Alert limits
-        </Text>
-        <LimitPair
-          title="Air temperature"
-          unit="°C"
-          step={0.5}
-          decimals={1}
-          bounds={[-40, 80]}
-          min={draft.airTempMin}
-          max={draft.airTempMax}
-          onMin={(v) => set('airTempMin', v)}
-          onMax={(v) => set('airTempMax', v)}
-        />
-        <Divider color={theme.colors.border} />
-        <LimitPair
-          title="Humidity"
-          unit="%"
-          step={1}
-          bounds={[0, 100]}
-          min={draft.humidityMin}
-          max={draft.humidityMax}
-          onMin={(v) => set('humidityMin', v)}
-          onMax={(v) => set('humidityMax', v)}
-        />
-        <Divider color={theme.colors.border} />
-        <LimitPair
-          title="Soil moisture"
-          unit="%"
-          step={1}
-          bounds={[0, 100]}
-          min={draft.soilMoistureMin}
-          max={draft.soilMoistureMax}
-          onMin={(v) => set('soilMoistureMin', v)}
-          onMax={(v) => set('soilMoistureMax', v)}
-        />
-        <Divider color={theme.colors.border} />
-        <Text color="secondary">Light: no limits set (alerts off).</Text>
-      </Card>
-
-      <View style={styles.actions}>
-        <Button
-          label="Save thresholds"
-          icon="save-outline"
-          onPress={saveThresholds}
-          loading={saving}
-          disabled={!dirty || !online}
-          fullWidth
-        />
-        <Button
-          label="Discard changes"
-          variant="secondary"
-          onPress={() => setDraft(saved)}
-          disabled={!dirty || saving}
-          fullWidth
-        />
-      </View>
+      <CalibrationCard deviceId={deviceId} />
     </Screen>
   );
 }
 
-function LimitPair({
-  title,
-  unit,
-  step,
-  decimals = 0,
-  bounds,
-  min,
-  max,
-  onMin,
-  onMax,
-}: {
-  title: string;
-  unit: string;
-  step: number;
-  decimals?: number;
-  bounds: [number, number];
-  min: number | null;
-  max: number | null;
-  onMin: (v: number) => void;
-  onMax: (v: number) => void;
-}) {
+function LoadingCards() {
+  const theme = useTheme();
   return (
-    <View style={styles.pair}>
-      <Text variant="bodyStrong">{title}</Text>
-      {min !== null ? (
-        <Stepper
-          label="Minimum"
-          value={min}
-          onChange={onMin}
-          step={step}
-          min={bounds[0]}
-          max={max !== null ? max - step : bounds[1]}
-          unit={unit}
-          decimals={decimals}
-        />
-      ) : null}
-      {max !== null ? (
-        <Stepper
-          label="Maximum"
-          value={max}
-          onChange={onMax}
-          step={step}
-          min={min !== null ? min + step : bounds[0]}
-          max={bounds[1]}
-          unit={unit}
-          decimals={decimals}
-        />
-      ) : null}
+    <View accessible accessibilityLabel="Loading" style={styles.loading}>
+      <Skeleton height={300} radius={theme.radii.xl} />
+      <Skeleton height={220} radius={theme.radii.lg} />
+      <Skeleton height={320} radius={theme.radii.lg} />
     </View>
   );
 }
 
-function Divider({ color }: { color: string }) {
-  return <View style={{ height: StyleSheet.hairlineWidth, backgroundColor: color }} />;
-}
-
 const styles = StyleSheet.create({
-  section: { gap: 14 },
-  sectionHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  pair: { gap: 6 },
-  actions: { gap: 10 },
+  loading: { gap: 16 },
 });

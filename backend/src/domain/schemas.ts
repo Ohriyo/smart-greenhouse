@@ -66,6 +66,18 @@ export const TelemetrySchema = z.object({
     .transform((v) => v ?? null),
   /** Seconds between telemetry messages; used for offline detection (3 missed intervals). */
   intervalSec: z.number().int().min(1).max(3600).optional(),
+  /** Dev-only: true when the telemetry comes from the simulator, not real hardware. */
+  simulator: z.boolean().optional(),
+  /** Seconds since the device booted (diagnostics only; not stored). */
+  uptimeSec: z.number().int().min(0).optional(),
+  /** Fan thresholds the device is currently using (acknowledges setFanThresholds). */
+  fanOnTemp: z.number().min(10).max(50).optional(),
+  fanOffTemp: z.number().min(10).max(50).optional(),
+  /** Soil calibration the device is using (mV in air / in water); acknowledges calibrateSoil. */
+  soilDryMv: z.number().int().min(0).max(4095).optional(),
+  soilWetMv: z.number().int().min(0).max(4095).optional(),
+  /** Failing sensors, e.g. ["dht"]. Their values are null. Logged when the set changes. */
+  errors: z.array(z.string().max(32)).max(10).optional(),
 });
 export type Telemetry = z.infer<typeof TelemetrySchema>;
 
@@ -94,8 +106,59 @@ export const DeviceCommandSchema = z.discriminatedUnion('type', [
     .refine((c) => c.fanOnTemp - c.fanOffTemp >= FAN_TEMP_MIN_GAP, {
       message: `fanOffTemp must be at least ${FAN_TEMP_MIN_GAP} °C below fanOnTemp`,
     }),
+  z.object({ ...commandBase, type: z.literal('calibrateSoil'), point: z.enum(['dry', 'wet']) }),
 ]);
 export type DeviceCommand = z.infer<typeof DeviceCommandSchema>;
+
+/** True if the text contains a control character (newline, tab, DEL, ...). */
+function hasControlChar(text: string): boolean {
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    if (code < 0x20 || code === 0x7f) return true;
+  }
+  return false;
+}
+
+/** International format: "+", then 8–15 digits, the first not 0 (e.g. +639171234567). */
+export const PhoneSchema = z
+  .string()
+  .trim()
+  .regex(/^\+[1-9]\d{7,14}$/, 'Use international format, e.g. +639171234567');
+
+/** POST /api/notifications/test: optional preset ("demo" = the prototype's sample alert). */
+export const PushTestBodySchema = z.strictObject({ preset: z.enum(['demo']).optional() });
+
+/** PUT /api/sms/settings: full replacement. */
+export const SmsSettingsBodySchema = z
+  .strictObject({
+    enabled: z.boolean(),
+    phone: PhoneSchema.nullable(),
+    /** "Greenhouse offline" SMS after this many minutes without data. */
+    offlineAfterMin: z.number().int().min(5).max(120),
+  })
+  .superRefine((body, ctx) => {
+    if (body.enabled && body.phone === null) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['phone'],
+        message: 'Enter the owner’s number to turn SMS alerts on',
+      });
+    }
+  });
+
+/** PATCH /api/devices/:id: rename the greenhouse (shown as the title in the app). */
+export const DeviceRenameBodySchema = z.strictObject({
+  name: z
+    .string()
+    .trim()
+    .min(1, 'Enter a name')
+    .max(40, 'Use at most 40 characters')
+    // No control characters (newlines, tabs, ...): the name is shown in titles and push messages.
+    .refine((n) => !hasControlChar(n), 'Use letters, numbers and punctuation only'),
+});
+
+/** POST /api/devices/:id/soil-calibration */
+export const SoilCalibrationBodySchema = z.strictObject({ point: z.enum(['dry', 'wet']) });
 
 // ---------- Alerts ----------
 
@@ -121,6 +184,22 @@ export const HistoryQuerySchema = z.object({
   range: HistoryRangeSchema.default('24h'),
 });
 
+/** GET /api/devices/:id/fan-activity query. */
+export const FanActivityQuerySchema = z.object({
+  range: HistoryRangeSchema.default('24h'),
+});
+
+/** GET /api/devices/:id/heatmap query: hourly averages of the last N Manila days. */
+export const HeatmapQuerySchema = z.object({
+  metric: AlertMetricSchema.default('airTemp'),
+  days: z.coerce.number().int().min(1).max(30).default(7),
+});
+
+/** GET /api/devices/:id/recent query: raw readings of the last N minutes (1–60). */
+export const RecentQuerySchema = z.object({
+  minutes: z.coerce.number().int().min(1).max(60).default(30),
+});
+
 /** GET /api/alerts query. `severity` accepts a comma-separated list. */
 export const AlertsQuerySchema = z.object({
   deviceId: DeviceIdSchema.optional(),
@@ -136,6 +215,26 @@ export const AlertsQuerySchema = z.object({
 
 /** POST /api/alerts/read-all — optional body. */
 export const ReadAllBodySchema = z.strictObject({ deviceId: DeviceIdSchema.optional() });
+
+// ---------- Push notifications ----------
+
+/** "ExponentPushToken[...]" (or the older "ExpoPushToken[...]"), as returned by expo-notifications. */
+export const ExpoPushTokenSchema = z
+  .string()
+  .max(200)
+  .regex(/^Expo(nent)?PushToken\[[^\]]+\]$/, 'token must be an Expo push token');
+
+export const PushTokenBodySchema = z.strictObject({
+  token: ExpoPushTokenSchema,
+  platform: z.literal('android').default('android'),
+});
+
+export const NotificationSettingsBodySchema = z.strictObject({
+  enabled: z.boolean(),
+  /** Alerts below this severity are not pushed (they still appear in the app). */
+  minSeverity: SeveritySchema,
+});
+export type NotificationSettingsBody = z.infer<typeof NotificationSettingsBodySchema>;
 
 const fanTemp = z.number().min(FAN_TEMP_MIN).max(FAN_TEMP_MAX);
 const limit = (min: number, max: number) => z.number().min(min).max(max).nullable();

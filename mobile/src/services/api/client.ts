@@ -8,7 +8,7 @@ import { HttpError, NetworkError, TimeoutError, ValidationError } from './errors
 export const DEFAULT_TIMEOUT_MS = 8000;
 
 export interface RequestOptions {
-  method?: 'GET' | 'POST' | 'PUT';
+  method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
   body?: unknown;
   /** Overrides the saved server URL (used by "Test connection"). */
   baseUrl?: string;
@@ -59,7 +59,8 @@ export async function apiRequest<S extends z.ZodType>(
 
   let json: unknown;
   try {
-    json = await res.json();
+    // 204 No Content has no body: validate `undefined` (schema z.undefined()).
+    json = res.status === 204 ? undefined : await res.json();
   } catch {
     if (!res.ok) throw new HttpError(res.status, 'UNKNOWN', res.statusText || 'Request failed');
     throw new ValidationError(path);

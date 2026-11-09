@@ -1,0 +1,101 @@
+// Smart Greenhouse data model (SQLite).
+// String fields documented as enums are validated with Zod in the app layer.
+// NOTE: there is no soil temperature sensor — never add soil temperature fields.
+
+generator client {
+  provider     = "prisma-client"
+  output       = "../src/generated/prisma"
+  moduleFormat = "esm"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+model Device {
+  id        String    @id // from the MQTT topic: greenhouse/{deviceId}/...
+  name      String
+  online    Boolean   @default(false)
+  lastSeen  DateTime?
+  createdAt DateTime  @default(now())
+  /// Telemetry interval the device reports (seconds); drives the "3 missed intervals" offline rule.
+  telemetryIntervalSec Int?
+
+  readings   Reading[]
+  thresholds Thresholds?
+  alerts     Alert[]
+  fanEvents  FanEvent[]
+}
+
+model Reading {
+  id           Int      @id @default(autoincrement())
+  deviceId     String
+  ts           DateTime
+  airTemp      Float? // °C (DHT22)
+  humidity     Float? // %RH (DHT22)
+  soilMoisture Float? // % after dry/wet calibration
+  soilRaw      Int? // raw ADC 0..4095
+  lux          Float? // BH1750
+  fanOn        Boolean
+  fanMode      String // "auto" | "on" | "off"
+  rssi         Int? // dBm
+
+  device Device @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+
+  @@index([deviceId, ts])
+}
+
+model Thresholds {
+  deviceId        String   @id
+  fanOnTemp       Float    @default(32)
+  fanOffTemp      Float    @default(28)
+  airTempMin      Float?   @default(15)
+  airTempMax      Float?   @default(35)
+  humidityMin     Float?   @default(40)
+  humidityMax     Float?   @default(85)
+  soilMoistureMin Float?   @default(30)
+  soilMoistureMax Float?   @default(80)
+  luxMin          Float?
+  luxMax          Float?
+  updatedAt       DateTime @updatedAt
+
+  device Device @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+}
+
+model Alert {
+  id       Int       @id @default(autoincrement())
+  deviceId String
+  ts       DateTime
+  type     String // "above_max" | "below_min" | "recovered" | "offline" | "online"
+  severity String // "info" | "warning" | "critical"
+  metric   String? // "airTemp" | "humidity" | "soilMoisture" | "lux" (threshold alerts only)
+  value    Float?
+  message  String
+  readAt   DateTime?
+
+  device Device @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+
+  @@index([deviceId, ts])
+  @@index([deviceId, metric])
+}
+
+// A confirmed change of fan state, detected from telemetry.
+model FanEvent {
+  id       Int      @id @default(autoincrement())
+  deviceId String
+  ts       DateTime
+  fanOn    Boolean
+  fanMode  String // "auto" | "on" | "off"
+  airTemp  Float? // air temperature at the moment of the change
+
+  device Device @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+
+  @@index([deviceId, ts])
+}
+
+model PushToken {
+  id        Int      @id @default(autoincrement())
+  token     String   @unique
+  platform  String   @default("android")
+  createdAt DateTime @default(now())
+}

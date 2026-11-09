@@ -1,0 +1,7 @@
+# Keep LF line endings in the repo and working copy (Prettier uses "endOfLine": "lf").
+* text=auto eol=lf
+
+# Binary files
+*.png binary
+*.jpg binary
+*.ico binary

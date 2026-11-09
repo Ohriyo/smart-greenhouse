@@ -1,0 +1,26 @@
+# Repo-wide ignores. backend/ and mobile/ have their own .gitignore as well.
+
+# Dependencies and build output
+node_modules/
+dist/
+
+# Secrets / local config (each folder commits a .env.example instead)
+.env
+.env*.local
+
+# SQLite databases (backend/dev.db etc.)
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# PlatformIO (firmware)
+firmware/.pio/
+firmware/include/secrets.h
+
+# Editors / OS / logs
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.log

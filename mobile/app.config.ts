@@ -13,7 +13,7 @@ const EAS_PROJECT_ID: string | undefined = undefined;
  */
 const GOOGLE_SERVICES_FILE = './google-services.json';
 
-// Android-only app (see CLAUDE.md). No iOS-specific settings on purpose.
+// Android-only app. No iOS-specific settings on purpose.
 export default ({ config }: ConfigContext): ExpoConfig => ({
   ...config,
   // Display name on the phone (launcher, notifications). The package id stays the same.

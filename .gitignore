@@ -24,3 +24,6 @@ firmware/include/secrets.h
 .DS_Store
 Thumbs.db
 *.log
+
+# Local Claude Code project instructions: kept on this machine, not published
+CLAUDE.md

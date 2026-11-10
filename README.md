@@ -17,7 +17,7 @@ ESP32 / simulator ──MQTT──► Mosquitto (laptop :1883) ◄──► back
 
 1. **Node.js LTS** (v22 or v24) from <https://nodejs.org>. Check with `node -v`.
 2. **Mosquitto**, set up as described in [docs/setup-mosquitto.md](docs/setup-mosquitto.md), including the Windows Firewall rules for ports 1883 and 4000 and a **Private** Wi-Fi profile.
-3. The **Smart Greenhouse development build** on your Android phone. See [docs/setup-push.md](docs/setup-push.md); it's needed for push notifications. Expo Go still runs the app, but without push.
+3. The **ETanim development build** on your Android phone. See [docs/setup-push.md](docs/setup-push.md); it's needed for push notifications. Expo Go still runs the app, but without push.
 4. The phone and the laptop on the **same Wi-Fi**.
 
 ### Find your laptop's LAN IP

@@ -24,6 +24,9 @@ import { formatRelative, formatUptime, useNow } from '@/utils/time';
 
 import { useRenameDevice } from './useRenameDevice';
 
+/** An uptime report older than this is not trusted (telemetry arrives every ~5 s). */
+const UPTIME_FRESH_MS = 60_000;
+
 /** "DEVICE": name, id, online state, and last seen / Wi-Fi signal / uptime from real telemetry. */
 export const DeviceCard = memo(function DeviceCard() {
   const deviceId = useLiveStore((s) => s.deviceIds[0]);
@@ -58,9 +61,13 @@ function DeviceDetails({ deviceId }: { deviceId: string }) {
   // Values from a device that is not live would be misleading: show a dash.
   const lastSeen = device?.lastSeen ? capitalize(formatRelative(device.lastSeen, now)) : '—';
   const signal = live && rssi !== null ? signalOf(rssi) : null;
+  // Uptime counts up from the last report, but only while reports keep coming: the backend
+  // keeps the last value forever, and firmware that doesn't send uptime (or a stale value from
+  // an old run) must show "—", not an ever-growing wrong number.
+  const reportAgeMs = device?.uptimeAt ? now - Date.parse(device.uptimeAt) : Infinity;
   const uptimeSec =
-    live && device?.uptimeSec != null && device.uptimeAt
-      ? device.uptimeSec + Math.max(0, (now - Date.parse(device.uptimeAt)) / 1000)
+    live && device?.uptimeSec != null && reportAgeMs <= UPTIME_FRESH_MS
+      ? device.uptimeSec + Math.max(0, reportAgeMs / 1000)
       : null;
   const signalColor =
     signal === null

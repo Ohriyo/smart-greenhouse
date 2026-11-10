@@ -4,6 +4,8 @@ Closed-app alerts take this route: **backend → Expo Push Service → Firebase 
 
 You do this setup once. After that, you only rebuild when native code or config changes (new native packages, `app.config.ts` plugins, `google-services.json`). Normal code changes reload instantly as before.
 
+> **This is only for push notifications.** SMS alerts ([setup-sms.md](setup-sms.md)) are sent by the backend on your laptop, so they work with Expo Go too. You don't need a development build for them.
+
 What you need:
 
 - A free **Expo account**: <https://expo.dev/signup>
@@ -107,7 +109,7 @@ FCM is Google's push delivery service for Android. Expo Push Service hands each 
 1. Open <https://console.firebase.google.com> → **Create a project** → name it, e.g. `smart-greenhouse` → you can turn **Google Analytics off** → **Create project**.
 2. On the project home page, click the **Android** icon (**Add app**).
    - **Android package name:** `com.riopana.greenhouse`. It must match `android.package` in `app.config.ts` exactly.
-   - App nickname: optional (e.g. `Smart Greenhouse`). SHA-1: leave empty.
+   - App nickname: optional (e.g. `ETanim`). SHA-1: leave empty.
    - Click **Register app**.
 3. **Download `google-services.json`** and save it as `mobile/google-services.json`, next to `app.config.ts`.
    - `app.config.ts` already points to this path (`android.googleServicesFile`).
@@ -155,7 +157,7 @@ Install on the phone:
 2. Android asks to allow installs from this source (Chrome/Files) → **Settings** → enable **Allow from this source** → back → **Install**.
 3. Play Protect may warn about an unknown app → **More details** → **Install anyway**. That's normal for apps you build yourself.
 
-The new app is called **Smart Greenhouse** and has its own icon. You can keep Expo Go installed; just don't use it for this project anymore.
+The new app is called **ETanim** and has its own icon. You can keep Expo Go installed; just don't use it for this project anymore.
 
 ## 6. Run the app with the development build
 
@@ -170,9 +172,9 @@ npx expo start --dev-client
 
 On the phone (same Wi-Fi as the laptop):
 
-1. Open **Smart Greenhouse**. The dev launcher lists the servers it finds on the network. Tap the one with your laptop's IP (`http://192.168.254.117:8081`).
+1. Open **ETanim**. The dev launcher lists the servers it finds on the network. Tap the one with your laptop's IP (`http://192.168.50.69:8081`).
 2. Or scan the QR code from the terminal with the phone camera.
-3. The app loads. It's a new app with its own storage, so check **Settings** → backend address. It's pre-filled from `mobile/.env` (`EXPO_PUBLIC_API_URL`) if you set that; otherwise enter `http://192.168.254.117:4000` and tap **Save**.
+3. The app loads. It's a new app with its own storage, so check **Settings** → backend address. It's pre-filled from `mobile/.env` (`EXPO_PUBLIC_API_URL`) if you set that; otherwise enter `http://192.168.50.69:4000` and tap **Save**.
 
 When do you need `eas build` again? Only after adding a native package, changing plugins or Android settings in `app.config.ts`, or replacing `google-services.json`. JavaScript/TypeScript changes reload live.
 
@@ -180,51 +182,51 @@ When do you need `eas build` again? Only after adding a native package, changing
 
 1. **Alerts** tab → the card *"Get alerts when the app is closed"* → **Turn on notifications**. Android 13+ shows the system dialog → **Allow**.
    - Android 12 and older don't ask: notifications are allowed by default.
-2. **Settings** → **Notifications** → *Push on this phone* should say **Registered**.
+2. **Settings** → **Notifications** → the **Push notifications** switch should be **on** (it turns on once Android's permission is granted and the phone is registered).
    - The backend terminal doesn't log the registration. To check, run `curl.exe -X POST http://localhost:4000/api/notifications/test` in another PowerShell window. It sends the same test as the button below.
    - `curl.exe` is the real curl program. Plain `curl` in PowerShell is a different command.
    - The answer `{"tokens":1,"sent":1,…}` means the server knows your phone and Expo accepted the message.
-3. Tap **Send test notification**. A notification *"Smart Greenhouse – Test notification…"* should appear within seconds.
+3. Tap **Send test notification**. A notification *"ETanim – Test notification…"* should appear within seconds.
 4. Choose what to be notified about: **All / Warnings / Critical**. The default is Warnings, which covers warnings and critical alerts.
 
 ## 8. Android gotchas: battery savers delay or block pushes
 
 The backend sends alerts as **high-priority** FCM messages, which Android delivers even in Doze. Many phone makers add their own "battery optimization" on top, which can delay or drop pushes for apps you haven't opened in a while. For a greenhouse alarm, exempt the app.
 
-**Every phone (Android 12+):** Settings → **Apps** → **Smart Greenhouse**:
+**Every phone (Android 12+):** Settings → **Apps** → **ETanim**:
 
 - **Notifications** → allowed, and the category **Greenhouse alerts** is on. Leave its importance at the default, so it can pop up on screen.
 - **App battery usage** (or *Battery*) → **Unrestricted**.
-- Settings → Notifications → **Do Not Disturb**: if you use it, add Smart Greenhouse as an exception.
+- Settings → Notifications → **Do Not Disturb**: if you use it, add ETanim as an exception.
 
 The **Android app settings** button in the app's Settings → Notifications opens the app's page directly.
 
 **Samsung (One UI):**
 
-- Settings → **Battery** → **Background usage limits** → make sure Smart Greenhouse is **not** in *Sleeping apps* or *Deep sleeping apps*, and add it to **Never sleeping apps**.
+- Settings → **Battery** → **Background usage limits** → make sure ETanim is **not** in *Sleeping apps* or *Deep sleeping apps*, and add it to **Never sleeping apps**.
 - Turn off **Put unused apps to sleep** if you want to be safe.
-- Settings → Apps → Smart Greenhouse → **Battery** → **Unrestricted**.
+- Settings → Apps → ETanim → **Battery** → **Unrestricted**.
 
 **Xiaomi / Redmi / POCO (MIUI / HyperOS):**
 
-- Settings → **Apps** → **Manage apps** → Smart Greenhouse → **Autostart: on**.
+- Settings → **Apps** → **Manage apps** → ETanim → **Autostart: on**.
 - Same page → **Battery saver** → **No restrictions**.
 - Recent apps screen: long-press the app's card → **lock** (padlock icon), so "clear all" doesn't kill it.
 
 **vivo / iQOO (Funtouch OS / OriginOS):**
 
-- Settings → **Battery** → **Background power consumption management** → Smart Greenhouse → **Allow high background power consumption**. On some versions this is called *Don't restrict*.
-- Settings → **Apps** → **Autostart** (or i Manager → App manager → Autostart) → Smart Greenhouse **on**.
+- Settings → **Battery** → **Background power consumption management** → ETanim → **Allow high background power consumption**. On some versions this is called *Don't restrict*.
+- Settings → **Apps** → **Autostart** (or i Manager → App manager → Autostart) → ETanim **on**.
 - Lock the app in recent apps (pull the card down or tap the lock).
 
 **OPPO / realme (ColorOS / realme UI):**
 
-- Settings → **Battery** → **More settings** / **App battery management** → Smart Greenhouse → **Allow background activity** and **Allow auto launch**.
+- Settings → **Battery** → **More settings** / **App battery management** → ETanim → **Allow background activity** and **Allow auto launch**.
 - Lock the app in recent apps.
 
-**OnePlus (OxygenOS):** Settings → **Battery** → **Battery optimization** → Smart Greenhouse → **Don't optimize**.
+**OnePlus (OxygenOS):** Settings → **Battery** → **Battery optimization** → ETanim → **Don't optimize**.
 
-**Huawei / Honor (EMUI / MagicOS):** Settings → **Battery** → **App launch** → Smart Greenhouse → switch to **Manage manually** and turn on *Auto-launch*, *Secondary launch* and *Run in background*. Huawei phones without Google services can't receive FCM pushes at all.
+**Huawei / Honor (EMUI / MagicOS):** Settings → **Battery** → **App launch** → ETanim → switch to **Manage manually** and turn on *Auto-launch*, *Secondary launch* and *Run in background*. Huawei phones without Google services can't receive FCM pushes at all.
 
 Good to know:
 
@@ -236,7 +238,7 @@ Good to know:
 
 | Symptom | Check |
 |---|---|
-| Settings says *Unavailable: Expo Go cannot receive push notifications* | You opened the project in Expo Go. Open the **Smart Greenhouse** app instead |
+| Settings says *Unavailable: Expo Go cannot receive push notifications* | You opened the project in Expo Go. Open the **ETanim** app instead |
 | *EAS project id missing* | Step 2: set `EAS_PROJECT_ID`, then restart `npx expo start --dev-client` |
 | *Not registered* + an error message | Backend address wrong or backend not running. Settings → Test connection |
 | Test returns `"tokens": 0` | The phone never registered: allow notifications (step 7) and reopen the app |
@@ -244,3 +246,7 @@ Good to know:
 | Backend log `InvalidCredentials` / `MismatchSenderId` | The FCM V1 key (step 4) and `google-services.json` (step 3) must come from the **same** Firebase project. Fix it, then rebuild (step 5) |
 | Test `sent: 1` but nothing on the phone | Battery settings (step 8). Check the *Greenhouse alerts* category is on and the phone has internet |
 | Backend log *removed … unregistered push token(s)* | The app was uninstalled or its data cleared. Normal clean-up; reopening the app registers again |
+
+## 10. Try the demo notification
+
+With a development build, the dev-only **Demo** sheet's **Trigger push notification** button sends a *real* push through this whole route ("Greenhouse alert / Air temperature 33.1 °C — fan turned on"). Press Home right after tapping it, and tap the notification to open the Alerts tab. In Expo Go, the same button shows an equivalent local notification instead.

@@ -16,7 +16,11 @@ export function thresholdsRouter({ defaultDeviceId }: { defaultDeviceId: string 
     const { deviceId } = DeviceQuerySchema.parse(query);
     const device = await resolveDevice(deviceId, defaultDeviceId);
     if (!device) {
-      throw new ApiError(404, 'NOT_FOUND', 'No device yet: thresholds exist once it sends a reading');
+      throw new ApiError(
+        404,
+        'NOT_FOUND',
+        'No device yet: thresholds exist once it sends a reading',
+      );
     }
     return device.id;
   }

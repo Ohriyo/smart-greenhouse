@@ -130,32 +130,8 @@ function hasControlChar(text: string): boolean {
   return false;
 }
 
-/** International format: "+", then 8–15 digits, the first not 0 (e.g. +639171234567). */
-export const PhoneSchema = z
-  .string()
-  .trim()
-  .regex(/^\+[1-9]\d{7,14}$/, 'Use international format, e.g. +639171234567');
-
 /** POST /api/notifications/test: optional preset ("demo" = the prototype's sample alert). */
 export const PushTestBodySchema = z.strictObject({ preset: z.enum(['demo']).optional() });
-
-/** PUT /api/sms/settings: full replacement. */
-export const SmsSettingsBodySchema = z
-  .strictObject({
-    enabled: z.boolean(),
-    phone: PhoneSchema.nullable(),
-    /** "Greenhouse offline" SMS after this many minutes without data. */
-    offlineAfterMin: z.number().int().min(5).max(120),
-  })
-  .superRefine((body, ctx) => {
-    if (body.enabled && body.phone === null) {
-      ctx.addIssue({
-        code: 'custom',
-        path: ['phone'],
-        message: 'Enter the owner’s number to turn SMS alerts on',
-      });
-    }
-  });
 
 /** PATCH /api/devices/:id: rename the greenhouse (shown as the title in the app). */
 export const DeviceRenameBodySchema = z.strictObject({

@@ -13,8 +13,7 @@ if (existsSync(envFile)) process.loadEnvFile(envFile);
 function blankToUndefined(v: unknown): unknown {
   return typeof v === 'string' && v.trim() === '' ? undefined : v;
 }
-const optionalString = (schema: z.ZodString) =>
-  z.preprocess(blankToUndefined, schema.optional());
+const optionalString = (schema: z.ZodString) => z.preprocess(blankToUndefined, schema.optional());
 const flag = (fallback: 'true' | 'false') =>
   z
     .preprocess(blankToUndefined, z.enum(['true', 'false']).default(fallback))
@@ -138,7 +137,10 @@ const EnvSchema = z.object({
   /** Sender name registered with Semaphore; empty = your account's default. */
   SEMAPHORE_SENDER_NAME: optionalString(z.string().min(1).max(11)),
   /** Safety limit: at most this many alert SMS per rolling 24 hours (test SMS excluded). */
-  SMS_DAILY_CAP: z.preprocess(blankToUndefined, z.coerce.number().int().min(1).max(200).default(10)),
+  SMS_DAILY_CAP: z.preprocess(
+    blankToUndefined,
+    z.coerce.number().int().min(1).max(200).default(10),
+  ),
   /** Text "greenhouse offline" after this many minutes without readings. */
   SMS_OFFLINE_AFTER_MINUTES: z.preprocess(
     blankToUndefined,

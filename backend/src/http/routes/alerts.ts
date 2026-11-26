@@ -37,24 +37,32 @@ export function alertsRouter(sms: SmsNotifier, adminApiKey: string | undefined):
   });
 
   // Pre-demo check: one real test SMS to every ALERT_PHONE_NUMBERS entry (X-Admin-Key).
-  router.post('/test', requireKey('X-Admin-Key', adminApiKey, 'ADMIN_API_KEY'), async (_req, res) => {
-    const result = await sms.sendTest();
-    if (result.outcome === 'no-recipients') {
-      throw new ApiError(409, 'SMS_NOT_CONFIGURED', 'ALERT_PHONE_NUMBERS is empty on the server');
-    }
-    if (result.outcome === 'throttled') {
-      throw new ApiError(429, 'RATE_LIMITED', 'Too many test messages (5 per hour). Try again later.');
-    }
-    const { attempt } = result;
-    res.json({
-      status: attempt.status,
-      dryRun: sms.dryRun,
-      recipients: attempt.recipients.split(', '),
-      message: attempt.message,
-      providerResponse: attempt.providerResponse,
-      at: attempt.createdAt.toISOString(),
-    });
-  });
+  router.post(
+    '/test',
+    requireKey('X-Admin-Key', adminApiKey, 'ADMIN_API_KEY'),
+    async (_req, res) => {
+      const result = await sms.sendTest();
+      if (result.outcome === 'no-recipients') {
+        throw new ApiError(409, 'SMS_NOT_CONFIGURED', 'ALERT_PHONE_NUMBERS is empty on the server');
+      }
+      if (result.outcome === 'throttled') {
+        throw new ApiError(
+          429,
+          'RATE_LIMITED',
+          'Too many test messages (5 per hour). Try again later.',
+        );
+      }
+      const { attempt } = result;
+      res.json({
+        status: attempt.status,
+        dryRun: sms.dryRun,
+        recipients: attempt.recipients.split(', '),
+        message: attempt.message,
+        providerResponse: attempt.providerResponse,
+        at: attempt.createdAt.toISOString(),
+      });
+    },
+  );
 
   router.post('/:id/read', async (req, res) => {
     const id = AlertIdSchema.safeParse(req.params.id);

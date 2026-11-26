@@ -59,9 +59,7 @@ const OptionsSchema = z.object({
   hot: z.boolean(),
   dry: z.boolean(),
   stallAfter: z.coerce.number().positive().optional(),
-  url: z
-    .url({ protocol: /^https?$/ })
-    .transform((u) => u.replace(/\/+$/, '')),
+  url: z.url({ protocol: /^https?$/ }).transform((u) => u.replace(/\/+$/, '')),
   key: z.string({ error: 'missing: set DEVICE_API_KEY in backend/.env or pass --key' }).min(1),
 });
 

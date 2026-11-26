@@ -91,7 +91,10 @@ interface Deps {
   clock?: () => number;
 }
 
-type Draft = Omit<NewSmsAlert, 'createdAt' | 'message' | 'recipients' | 'status' | 'providerResponse'>;
+type Draft = Omit<
+  NewSmsAlert,
+  'createdAt' | 'message' | 'recipients' | 'status' | 'providerResponse'
+>;
 
 /**
  * SMS alerts to ALERT_PHONE_NUMBERS (docs/api-contract.md §7):
@@ -125,7 +128,12 @@ export function createSmsNotifier(deps: Deps): SmsNotifier {
     });
   }
 
-  function record(draft: Draft, message: string, status: NewSmsAlert['status'], providerResponse: string | null) {
+  function record(
+    draft: Draft,
+    message: string,
+    status: NewSmsAlert['status'],
+    providerResponse: string | null,
+  ) {
     return store.record({
       ...draft,
       createdAt: new Date(clock()),
@@ -146,7 +154,12 @@ export function createSmsNotifier(deps: Deps): SmsNotifier {
       const sent = await store.countSentSince(new Date(clock() - DAY_MS));
       if (sent >= dailyCap) {
         log.warn(`SMS not sent (${draft.kind}): daily limit of ${dailyCap} reached`);
-        return record(draft, message, 'skipped_daily_cap', `daily limit of ${dailyCap} SMS reached`);
+        return record(
+          draft,
+          message,
+          'skipped_daily_cap',
+          `daily limit of ${dailyCap} SMS reached`,
+        );
       }
     }
     if (!provider) {
@@ -209,7 +222,12 @@ export function createSmsNotifier(deps: Deps): SmsNotifier {
   }
 
   /** Waits out RETRY_FAILED_MS after a failed/capped attempt (no retry storm every 30 s). */
-  function retryTooSoon(last: SmsAlertRow | null, condition: SmsCondition, since: number, now: number) {
+  function retryTooSoon(
+    last: SmsAlertRow | null,
+    condition: SmsCondition,
+    since: number,
+    now: number,
+  ) {
     return (
       last !== null &&
       last.condition === condition &&
@@ -239,7 +257,11 @@ export function createSmsNotifier(deps: Deps): SmsNotifier {
             value: null,
             threshold: null,
           },
-          offlineMessage({ name: d.name, minutes: silentMs / MIN_MS, lastSeen: d.lastSeen.getTime() }),
+          offlineMessage({
+            name: d.name,
+            minutes: silentMs / MIN_MS,
+            lastSeen: d.lastSeen.getTime(),
+          }),
         );
       } else if (d.online) {
         // Back online after an announced outage → one closing SMS.

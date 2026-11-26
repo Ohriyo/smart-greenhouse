@@ -61,7 +61,10 @@ describe('other SMS', () => {
       offlineMessage({ name: 'gh-01', minutes: 65, lastSeen: T }),
       '[Greenhouse] gh-01 OFFLINE: no data for 1 h 5 min (last seen 14:32)',
     );
-    assert.equal(onlineMessage({ name: 'gh-01', at: T }), '[Greenhouse] gh-01 back ONLINE at 14:32');
+    assert.equal(
+      onlineMessage({ name: 'gh-01', at: T }),
+      '[Greenhouse] gh-01 back ONLINE at 14:32',
+    );
     assert.equal(testMessage(T), '[Greenhouse] Test message: SMS alerts are working (14:32)');
   });
 });

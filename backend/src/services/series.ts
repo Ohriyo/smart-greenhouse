@@ -60,9 +60,9 @@ export interface StatsResult {
 
 // Postgres bigint/numeric may arrive as bigint; avg of no rows is null.
 const num = z.union([z.number(), z.bigint()]).transform(Number);
-const numOrNull = z.union([z.number(), z.bigint(), z.null()]).transform((v) =>
-  v === null ? null : Number(v),
-);
+const numOrNull = z
+  .union([z.number(), z.bigint(), z.null()])
+  .transform((v) => (v === null ? null : Number(v)));
 const round2 = (v: number | null) => (v === null ? null : Math.round(v * 100) / 100);
 
 const SeriesRowSchema = z.object({

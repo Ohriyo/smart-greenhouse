@@ -51,7 +51,13 @@ const queued = () =>
 const never = () => new Promise<Response>(() => undefined);
 
 function provider(fetchFn: typeof fetch, senderName?: string) {
-  return createSemaphoreProvider({ apiKey: KEY, senderName, fetchFn, timeoutMs: 50, retryDelayMs: 0 });
+  return createSemaphoreProvider({
+    apiKey: KEY,
+    senderName,
+    fetchFn,
+    timeoutMs: 50,
+    retryDelayMs: 0,
+  });
 }
 
 describe('Semaphore provider: request', () => {

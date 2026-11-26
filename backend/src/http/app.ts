@@ -52,10 +52,7 @@ async function databaseStatus(): Promise<'ok' | 'error'> {
     }, DB_CHECK_TIMEOUT_MS);
   });
   try {
-    return await Promise.race([
-      prisma.$queryRaw`SELECT 1`.then(() => 'ok' as const),
-      timeout,
-    ]);
+    return await Promise.race([prisma.$queryRaw`SELECT 1`.then(() => 'ok' as const), timeout]);
   } catch {
     return 'error';
   } finally {

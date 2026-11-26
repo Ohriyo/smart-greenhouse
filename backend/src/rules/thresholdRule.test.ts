@@ -1,11 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import {
-  EMPTY_STATE,
-  evaluateMetric,
-  transitions,
-  type MetricState,
-} from './thresholdRule.js';
+import { EMPTY_STATE, evaluateMetric, transitions, type MetricState } from './thresholdRule.js';
 
 const MIN = 60_000;
 const COOLDOWN = 15 * MIN;

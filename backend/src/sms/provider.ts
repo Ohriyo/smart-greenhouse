@@ -100,17 +100,26 @@ export function createSemaphoreProvider(opts: SemaphoreOptions): SmsProvider {
     }
 
     if (res.status >= 500) {
-      return { retry: true, result: { ok: false, providerResponse: clean(`HTTP ${res.status}: ${raw}`) } };
+      return {
+        retry: true,
+        result: { ok: false, providerResponse: clean(`HTTP ${res.status}: ${raw}`) },
+      };
     }
     if (!res.ok) {
-      return { retry: false, result: { ok: false, providerResponse: clean(`HTTP ${res.status}: ${raw}`) } };
+      return {
+        retry: false,
+        result: { ok: false, providerResponse: clean(`HTTP ${res.status}: ${raw}`) },
+      };
     }
 
     let json: unknown;
     try {
       json = JSON.parse(raw) as unknown;
     } catch {
-      return { retry: false, result: { ok: false, providerResponse: clean(`unreadable answer: ${raw}`) } };
+      return {
+        retry: false,
+        result: { ok: false, providerResponse: clean(`unreadable answer: ${raw}`) },
+      };
     }
     const records = SemaphoreRecordsSchema.safeParse(json);
     // Errors such as a wrong key or an unregistered sender name come back as a non-record body.
@@ -119,7 +128,11 @@ export function createSemaphoreProvider(opts: SemaphoreOptions): SmsProvider {
     }
     const accepted = records.data.some((r) => !/^(failed|refunded)$/i.test(r.status));
     const summary = JSON.stringify(
-      records.data.map((r) => ({ message_id: r.message_id, recipient: r.recipient, status: r.status })),
+      records.data.map((r) => ({
+        message_id: r.message_id,
+        recipient: r.recipient,
+        status: r.status,
+      })),
     );
     return { retry: false, result: { ok: accepted, providerResponse: clean(summary) } };
   }
@@ -135,7 +148,11 @@ export function createSemaphoreProvider(opts: SemaphoreOptions): SmsProvider {
           attempts: 0,
         };
       }
-      const form = new URLSearchParams({ apikey: apiKey, number: recipients.join(','), message: text });
+      const form = new URLSearchParams({
+        apikey: apiKey,
+        number: recipients.join(','),
+        message: text,
+      });
       if (senderName) form.set('sendername', senderName);
 
       const first = await attempt(form);
@@ -144,7 +161,9 @@ export function createSemaphoreProvider(opts: SemaphoreOptions): SmsProvider {
       const second = await attempt(form);
       return {
         ...second.result,
-        providerResponse: clean(`retried after "${first.result.providerResponse}"; ${second.result.providerResponse}`),
+        providerResponse: clean(
+          `retried after "${first.result.providerResponse}"; ${second.result.providerResponse}`,
+        ),
         attempts: 2,
       };
     },

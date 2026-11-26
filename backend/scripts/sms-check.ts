@@ -27,7 +27,9 @@ console.log(
   `SMS_DRY_RUN=${String(dryRun)}${dryRun ? ' (nothing is sent: set it to "false" for real SMS)' : ''}`,
 );
 if (phones.invalidPositions.length) {
-  console.log(`[ FAIL ] ALERT_PHONE_NUMBERS entry ${phones.invalidPositions.join(', ')} is invalid`);
+  console.log(
+    `[ FAIL ] ALERT_PHONE_NUMBERS entry ${phones.invalidPositions.join(', ')} is invalid`,
+  );
 } else {
   console.log(`[  OK  ] ALERT_PHONE_NUMBERS: ${phones.numbers.length} number(s)`);
 }

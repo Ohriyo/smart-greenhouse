@@ -86,7 +86,8 @@ export async function latestSmsByAlert(alertIds: number[]): Promise<Map<number, 
     orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
   });
   for (const row of rows) {
-    if (row.alertId !== null && !result.has(row.alertId)) result.set(row.alertId, toSmsAlertRow(row));
+    if (row.alertId !== null && !result.has(row.alertId))
+      result.set(row.alertId, toSmsAlertRow(row));
   }
   return result;
 }

@@ -10,7 +10,7 @@
 // adds nothing once the full window is filled.
 import { parseArgs } from 'node:util';
 import { z } from 'zod';
-import { prisma } from '../src/db.js';
+import { closeDatabase, prisma } from '../src/db.js';
 import { DeviceIdSchema } from '../src/domain/schemas.js';
 
 const { values: raw } = parseArgs({
@@ -180,4 +180,4 @@ main()
     console.error(err);
     process.exitCode = 1;
   })
-  .finally(() => void prisma.$disconnect());
+  .finally(() => void closeDatabase());

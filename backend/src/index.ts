@@ -2,7 +2,7 @@ import { createServer } from 'node:http';
 import { networkInterfaces } from 'node:os';
 import { Expo } from 'expo-server-sdk';
 import { env } from './config/env.js';
-import { prisma } from './db.js';
+import { closeDatabase } from './db.js';
 import { createDevTools } from './dev/devTools.js';
 import { createApp } from './http/app.js';
 import { isAllowedOrigin } from './http/cors.js';
@@ -132,7 +132,7 @@ async function shutdown(signal: string): Promise<void> {
   await realtime.close(); // also closes the HTTP server
   await ingest.idle(); // finish alert rules for readings already accepted
   await sms.idle(); // ...and their SMS
-  await prisma.$disconnect();
+  await closeDatabase();
   process.exit(0);
 }
 

@@ -1,39 +1,28 @@
 import { PrismaPg } from '@prisma/adapter-pg';
 import { env } from './config/env.js';
 import { PrismaClient } from './generated/prisma/client.js';
+import { createLogger } from './lib/logger.js';
+import { createPool } from './lib/pgPool.js';
 
-const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
+const log = createLogger('db');
 
-/**
- * node-postgres pool settings for DATABASE_URL.
- *
- * - A database on this machine (tests, local dev) uses plain TCP unless the URL
- *   asks for TLS.
- * - Every other database (Neon) ALWAYS uses TLS with certificate verification,
- *   whatever the URL says. The URL's `sslmode`/`channel_binding` options are
- *   applied here instead (pg would otherwise warn that it treats
- *   `sslmode=require` as `verify-full`).
- */
-export function poolConfig(url: string) {
-  const parsed = new URL(url);
-  const sslmode = parsed.searchParams.get('sslmode');
-  const base = {
-    max: 5, // one small instance: plenty, and well under Neon's connection limits
-    connectionTimeoutMillis: 10_000, // a suspended Neon compute wakes up in ~1 s
-    idleTimeoutMillis: 30_000,
-  };
-  if (sslmode === 'disable' || (LOCAL_HOSTS.has(parsed.hostname) && sslmode === null)) {
-    return { ...base, connectionString: url };
-  }
-  parsed.searchParams.delete('sslmode');
-  parsed.searchParams.delete('channel_binding');
-  return {
-    ...base,
-    connectionString: parsed.toString(),
-    ssl: { rejectUnauthorized: true },
-    // SCRAM-SHA-256-PLUS when the server offers it (Neon does).
-    enableChannelBinding: true,
-  };
+/** Connection pool for DATABASE_URL (TLS for Neon, sessions in UTC: see ./lib/pgPool.ts). */
+export const pool = createPool(env.DATABASE_URL, (err) => {
+  log.error('could not switch a database connection to UTC', err);
+});
+
+export const prisma = new PrismaClient({
+  adapter: new PrismaPg(pool, {
+    // An idle connection dropped by the server (e.g. Neon suspending its compute).
+    // The pool replaces it on the next query; without a listener it would crash the process.
+    onPoolError: (err) => {
+      log.warn('an idle database connection was closed', err);
+    },
+  }),
+});
+
+/** Closes Prisma and the pool (shutdown). */
+export async function closeDatabase(): Promise<void> {
+  await prisma.$disconnect();
+  await pool.end();
 }
-
-export const prisma = new PrismaClient({ adapter: new PrismaPg(poolConfig(env.DATABASE_URL)) });

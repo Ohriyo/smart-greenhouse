@@ -13,7 +13,7 @@ import {
 import assert from 'node:assert/strict';
 import { after, afterEach, before, beforeEach, describe, it } from 'node:test';
 import { z } from 'zod';
-import { prisma } from '../db.js';
+import { closeDatabase, prisma } from '../db.js';
 import { createSemaphoreProvider, type SmsProvider, type SmsSendResult } from './provider.js';
 
 const MIN = 60_000;
@@ -73,7 +73,7 @@ describe(
       t = undefined;
     });
     after(async () => {
-      await prisma.$disconnect();
+      await closeDatabase();
     });
 
     it('a reading inside the thresholds sends no SMS', async () => {

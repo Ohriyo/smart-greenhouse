@@ -13,7 +13,8 @@ import {
 import assert from 'node:assert/strict';
 import { after, afterEach, before, beforeEach, describe, it } from 'node:test';
 import { z } from 'zod';
-import { prisma } from '../db.js';
+import { closeDatabase, prisma } from '../db.js';
+import { pruneReadings } from '../services/retention.js';
 
 const MIN = 60_000;
 const ISO = z.iso.datetime();
@@ -79,7 +80,7 @@ describe('HTTP API on PostgreSQL', { skip: dbSkip }, () => {
     await t.close();
   });
   after(async () => {
-    await prisma.$disconnect();
+    await closeDatabase();
   });
 
   describe('GET /health', () => {
@@ -90,6 +91,29 @@ describe('HTTP API on PostgreSQL', { skip: dbSkip }, () => {
         .object({ status: z.literal('ok'), db: z.literal('ok'), time: ISO })
         .parse(await res.json());
       assert.ok(Math.abs(Date.parse(body.time) - Date.now()) < 60_000);
+    });
+  });
+
+  describe('database sessions', () => {
+    it('run in UTC, so the stored instant is the real one (whatever the server zone)', async () => {
+      const zone = z
+        .array(z.object({ tz: z.string() }))
+        .parse(await prisma.$queryRaw`SELECT current_setting('TimeZone') AS tz`);
+      assert.equal(zone[0]?.tz, 'UTC');
+
+      const sentTs = Date.now() - 5_000;
+      const res = await postReading(t.base, reading({ ts: sentTs }));
+      assert.equal(res.status, 201);
+      const stored = z
+        .array(z.object({ ms: z.number() }))
+        .parse(
+          await prisma.$queryRaw`SELECT (extract(epoch from "ts") * 1000)::float8 AS ms FROM "Reading"`,
+        );
+      assert.equal(stored[0]?.ms, sentTs, 'the SQL view of the time (history buckets) is right');
+      const api = z
+        .object({ reading: ReadingSchema })
+        .parse(await (await fetch(`${t.base}/api/readings/latest`)).json());
+      assert.equal(api.reading.ts, new Date(sentTs).toISOString(), 'and so is the API view');
     });
   });
 
@@ -260,6 +284,138 @@ describe('HTTP API on PostgreSQL', { skip: dbSkip }, () => {
         const res = await fetch(`${t.base}${path}`);
         assert.equal(res.status, 400, path);
       }
+    });
+  });
+
+  describe('per-device charts (History screen)', () => {
+    it('GET /api/devices/:id/history: avg/min/max per bucket, oldest first, nulls skipped', async () => {
+      await seed([
+        { minutesAgo: 5, airTemp: 20 },
+        { minutesAgo: 65, airTemp: 25 },
+        { minutesAgo: 125, airTemp: null },
+        { minutesAgo: 600, airTemp: 30 },
+        { minutesAgo: 25 * 60, airTemp: 99 }, // outside 24h
+      ]);
+      // Two readings in one bucket (24h → 432 000 ms buckets, aligned to the epoch).
+      const bucketMs = 432_000;
+      const bucket = Math.floor((Date.now() - 300 * MIN) / bucketMs) * bucketMs;
+      await prisma.reading.createMany({
+        data: [
+          { deviceId: 'gh-01', ts: new Date(bucket + 1_000), airTemp: 21 },
+          { deviceId: 'gh-01', ts: new Date(bucket + 2_000), airTemp: 24 },
+        ],
+      });
+
+      const res = await fetch(`${t.base}/api/devices/gh-01/history?metric=airTemp&range=24h`);
+      assert.equal(res.status, 200);
+      const body = z
+        .object({
+          bucketMs: z.literal(bucketMs),
+          points: z.array(
+            z.object({
+              ts: ISO,
+              avg: z.number(),
+              min: z.number(),
+              max: z.number(),
+              count: z.number().int(),
+            }),
+          ),
+        })
+        .loose()
+        .parse(await res.json());
+      assert.deepEqual(
+        body.points.map((p) => [p.avg, p.min, p.max, p.count]),
+        [
+          [30, 30, 30, 1],
+          [22.5, 21, 24, 2],
+          [25, 25, 25, 1],
+          [20, 20, 20, 1],
+        ],
+      );
+      assert.equal(body.points[1]?.ts, new Date(bucket).toISOString(), 'ts = bucket start');
+    });
+
+    it('GET /api/devices/:id/heatmap: hourly averages per Asia/Manila day', async () => {
+      await seed([]);
+      const HOUR = 60 * MIN;
+      const DAY = 24 * HOUR;
+      const MANILA = 8 * HOUR; // UTC+8, no daylight saving
+      const now = Date.now();
+      // Two readings in the same Manila hour, about 3 h ago.
+      const hourStart = Math.floor((now - 3 * HOUR + MANILA) / HOUR) * HOUR - MANILA;
+      await prisma.reading.createMany({
+        data: [
+          { deviceId: 'gh-01', ts: new Date(hourStart + 10_000), airTemp: 20 },
+          { deviceId: 'gh-01', ts: new Date(hourStart + 20_000), airTemp: 30 },
+        ],
+      });
+
+      const res = await fetch(`${t.base}/api/devices/gh-01/heatmap?metric=airTemp&days=2`);
+      assert.equal(res.status, 200);
+      const body = z
+        .object({
+          days: z.literal(2),
+          rows: z
+            .array(
+              z.object({
+                date: z.string(),
+                weekday: z.string(),
+                hours: z.array(z.number().nullable()).length(24),
+              }),
+            )
+            .length(2),
+        })
+        .loose()
+        .parse(await res.json());
+
+      const manilaDay = (ms: number) => Math.floor((ms + MANILA) / DAY);
+      const row = body.rows[manilaDay(hourStart) - (manilaDay(now) - 1)];
+      assert.ok(row);
+      const local = new Date(hourStart + MANILA);
+      assert.equal(row.date, local.toISOString().slice(0, 10));
+      assert.equal(
+        row.weekday,
+        local.toLocaleDateString('en-US', { weekday: 'short', timeZone: 'UTC' }),
+      );
+      assert.equal(row.hours[local.getUTCHours()], 25);
+      assert.equal(body.rows.flatMap((r) => r.hours).filter((v) => v !== null).length, 1);
+    });
+
+    it('GET /api/devices/:id/recent: raw readings of the last N minutes, oldest first', async () => {
+      await seed([
+        { minutesAgo: 5, airTemp: 22 },
+        { minutesAgo: 40, airTemp: 99 }, // outside 30 min
+        { minutesAgo: 20, airTemp: 21 },
+      ]);
+      const res = await fetch(`${t.base}/api/devices/gh-01/recent?minutes=30`);
+      assert.equal(res.status, 200);
+      const body = z
+        .object({ minutes: z.literal(30), readings: z.array(ReadingSchema) })
+        .loose()
+        .parse(await res.json());
+      assert.deepEqual(
+        body.readings.map((r) => r.airTemp),
+        [21, 22],
+      );
+    });
+  });
+
+  describe('retention', () => {
+    it('deletes only readings older than READINGS_RETENTION_DAYS', async () => {
+      await seed([
+        { minutesAgo: 31 * 24 * 60, airTemp: 1 },
+        { minutesAgo: 29 * 24 * 60, airTemp: 2 },
+        { minutesAgo: 1, airTemp: 3 },
+      ]);
+      assert.equal(await pruneReadings(30), 1);
+      const left = await prisma.reading.findMany({
+        orderBy: { ts: 'asc' },
+        select: { airTemp: true },
+      });
+      assert.deepEqual(
+        left.map((r) => r.airTemp),
+        [2, 3],
+      );
     });
   });
 

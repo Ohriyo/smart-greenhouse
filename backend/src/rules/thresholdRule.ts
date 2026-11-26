@@ -155,6 +155,31 @@ export function evaluateMetric(
   };
 }
 
+/**
+ * What changed between two states of one metric (drives the SMS alerts):
+ * - "crossed": a new episode started (the value went past a limit), announced or not
+ * - "announced": a silent episode got its in-app alert (its cooldown ended)
+ * - "recovered": the episode ended (value back inside the limit by the deadband)
+ * A jump straight to the opposite limit is only "crossed" (no "back to normal").
+ * Severity changes inside an episode (warning → critical) are not transitions.
+ */
+export type Transition =
+  | { kind: 'crossed' | 'announced'; direction: BreachType }
+  | { kind: 'recovered'; direction: BreachType };
+
+export function transitions(prev: MetricState, next: MetricState): Transition[] {
+  const before = prev.episode;
+  const after = next.episode;
+  if (before && !after) return [{ kind: 'recovered', direction: before.direction }];
+  if (after && before?.direction !== after.direction) {
+    return [{ kind: 'crossed', direction: after.direction }];
+  }
+  if (after && before && before.announcedSeverity === null && after.announcedSeverity !== null) {
+    return [{ kind: 'announced', direction: after.direction }];
+  }
+  return [];
+}
+
 function announce(
   state: MetricState,
   breach: { direction: BreachType; severity: Severity; limit: number },

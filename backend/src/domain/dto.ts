@@ -1,4 +1,5 @@
 import type { Alert, Device, Reading, Thresholds } from '../generated/prisma/client.js';
+import type { SmsAlertRow, SmsStatus } from '../sms/store.js';
 import {
   AlertMetricSchema,
   AlertTypeSchema,
@@ -27,6 +28,14 @@ export interface DeviceDto {
   soilWetMv: number | null;
 }
 
+/** The SMS sent for an alert (newest attempt). */
+export interface AlertSmsDto {
+  status: SmsStatus;
+  at: string;
+  /** Why it was not sent (failed / skipped / dry run); null when sent. */
+  detail: string | null;
+}
+
 export interface AlertDto {
   id: number;
   deviceId: string;
@@ -39,6 +48,15 @@ export interface AlertDto {
   limit: number | null;
   message: string;
   readAt: string | null;
+  /** null = no SMS for this alert (not a texted situation, SMS off, or not processed yet). */
+  sms: AlertSmsDto | null;
+}
+
+export function toAlertSmsDto(row: SmsAlertRow): AlertSmsDto {
+  let detail: string | null = null;
+  if (row.status === 'dry_run') detail = 'SMS_DRY_RUN is on: logged, not sent';
+  else if (row.status !== 'sent') detail = (row.providerResponse ?? '').slice(0, 200) || null;
+  return { status: row.status, at: row.createdAt.toISOString(), detail };
 }
 
 export interface ReadingDto {
@@ -82,7 +100,7 @@ export function toDeviceDto(d: Device): DeviceDto {
   };
 }
 
-export function toAlertDto(a: Alert): AlertDto {
+export function toAlertDto(a: Alert, sms: SmsAlertRow | null = null): AlertDto {
   return {
     id: a.id,
     deviceId: a.deviceId,
@@ -94,6 +112,7 @@ export function toAlertDto(a: Alert): AlertDto {
     limit: a.limitValue,
     message: a.message,
     readAt: a.readAt?.toISOString() ?? null,
+    sms: sms ? toAlertSmsDto(sms) : null,
   };
 }
 

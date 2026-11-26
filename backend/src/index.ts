@@ -21,7 +21,7 @@ import { startPresenceSweeper } from './services/presence.js';
 import { startRetentionJob } from './services/retention.js';
 import { createSmsNotifier } from './sms/notifier.js';
 import { createSmsProvider } from './sms/provider.js';
-import { createPrismaSmsStore } from './sms/store.js';
+import { createPrismaSmsStore } from './sms/prismaStore.js';
 import { startSmsSweeper } from './sms/sweeper.js';
 
 const log = createLogger('main');
@@ -48,18 +48,24 @@ const push = createPushSender({
   enabled: env.PUSH_ENABLED,
 });
 
-// SMS to the owner. Test mode logs instead of sending.
-const smsProvider = createSmsProvider(env);
+// SMS alerts to ALERT_PHONE_NUMBERS (Semaphore). Dry run records and logs only.
 const sms = createSmsNotifier({
   store: createPrismaSmsStore(),
-  provider: smsProvider,
+  provider: createSmsProvider(env),
+  dryRun: env.SMS_DRY_RUN,
+  recipients: env.ALERT_PHONE_NUMBERS,
+  cooldownMs: env.ALERT_COOLDOWN_MINUTES * 60_000,
   dailyCap: env.SMS_DAILY_CAP,
+  offlineAfterMs: env.SMS_OFFLINE_AFTER_MINUTES * 60_000,
 });
-log.info(
-  smsProvider.simulated
-    ? 'SMS provider: console (test mode, messages are only logged)'
-    : `SMS provider: ${smsProvider.name}`,
-);
+if (env.ALERT_PHONE_NUMBERS.length === 0) {
+  log.warn('SMS alerts off: ALERT_PHONE_NUMBERS is empty');
+} else {
+  log.info(
+    `SMS alerts to ${env.ALERT_PHONE_NUMBERS.length} number(s) via Semaphore` +
+      (env.SMS_DRY_RUN ? ' — DRY RUN: recorded and logged, nothing is sent' : ' — LIVE'),
+  );
+}
 
 // Dev-only Demo tools (DEV_TOOLS=true): scenarios for the simulator.
 const devTools = createDevTools({ enabled: env.DEV_TOOLS, commands });
@@ -67,10 +73,12 @@ if (env.DEV_TOOLS) log.warn('DEV_TOOLS=true: demo scenario endpoints are enabled
 
 const rules = createRulesEngine({
   realtime,
-  cooldownMs: env.ALERT_COOLDOWN_MIN * 60_000,
+  cooldownMs: env.ALERT_COOLDOWN_MINUTES * 60_000,
   onAlert: (alert) => {
-    void push.notifyAlert(alert);
-    void sms.onAlert(alert); // never throws
+    void push.notifyAlert(alert); // never throws
+  },
+  onSmsCandidate: (candidate) => {
+    void sms.onCandidate(candidate); // never throws; runs after the reading was stored
   },
 });
 
@@ -86,6 +94,7 @@ const server = createServer(
     realtime,
     config: {
       deviceApiKey: env.DEVICE_API_KEY,
+      adminApiKey: env.ADMIN_API_KEY,
       corsOrigins: env.CORS_ORIGIN,
       defaultDeviceId: env.DEFAULT_DEVICE_ID,
     },
@@ -121,7 +130,8 @@ async function shutdown(signal: string): Promise<void> {
   stopSmsSweeper();
   push.stop();
   await realtime.close(); // also closes the HTTP server
-  await ingest.idle(); // finish alerts/SMS for readings already accepted
+  await ingest.idle(); // finish alert rules for readings already accepted
+  await sms.idle(); // ...and their SMS
   await prisma.$disconnect();
   process.exit(0);
 }

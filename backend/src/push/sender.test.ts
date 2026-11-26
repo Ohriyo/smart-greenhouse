@@ -20,6 +20,7 @@ const alert = (severity: AlertDto['severity']): AlertDto => ({
   limit: 35,
   message: 'Air temperature very high: 39 °C (max 35 °C)',
   readAt: null,
+  sms: null,
 });
 
 /** Fake Expo client: chunks of 2, scripted tickets/receipts per token. */

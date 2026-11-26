@@ -2,6 +2,7 @@ import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import { DeviceIdSchema } from '../domain/schemas.js';
+import { parsePhoneList } from '../sms/phone.js';
 
 // backend/.env (local development). Variables that are already set (Render's
 // environment, the test runner) win: loadEnvFile never overrides them.
@@ -53,6 +54,31 @@ const OriginListSchema = z.preprocess(
     }),
 );
 
+/**
+ * ALERT_PHONE_NUMBERS: Philippine mobile numbers, comma-separated, any common form
+ * (0917…, +63917…). Normalized to 09XXXXXXXXX. An invalid entry stops the server
+ * with its position (never the number itself: it is personal data).
+ */
+const PhoneListSchema = z.preprocess(
+  blankToUndefined,
+  z
+    .string()
+    .default('')
+    .transform((raw, ctx) => {
+      const { numbers, invalidPositions } = parsePhoneList(raw);
+      if (invalidPositions.length > 0) {
+        ctx.addIssue({
+          code: 'custom',
+          message:
+            `entry ${invalidPositions.join(', ')} is not a Philippine mobile number ` +
+            '(use 09XXXXXXXXX or +639XXXXXXXXX, comma-separated)',
+        });
+        return z.NEVER;
+      }
+      return numbers;
+    }),
+);
+
 const EnvSchema = z.object({
   NODE_ENV: z.preprocess(
     blankToUndefined,
@@ -76,10 +102,13 @@ const EnvSchema = z.object({
     blankToUndefined,
     z.coerce.number().int().min(10).max(86_400).default(90),
   ),
-  /** Minimum minutes between two breach alerts of the same metric (unless severity rises). */
-  ALERT_COOLDOWN_MIN: z.preprocess(
+  /**
+   * No repeat SMS for the same sensor+condition within this many minutes; also the
+   * minimum gap between two in-app alerts of one metric (unless severity rises).
+   */
+  ALERT_COOLDOWN_MINUTES: z.preprocess(
     blankToUndefined,
-    z.coerce.number().min(0).max(1440).default(15),
+    z.coerce.number().min(0).max(1440).default(30),
   ),
   /** Raw readings older than this are deleted daily (the 30-day history needs 30). */
   READINGS_RETENTION_DAYS: z.preprocess(
@@ -91,16 +120,30 @@ const EnvSchema = z.object({
   /** Set to "false" to stop sending push notifications (alerts still appear in the app). */
   PUSH_ENABLED: flag('true'),
   /**
-   * SMS alerts to the owner (docs/setup-sms.md). "console" = test mode: messages are
-   * only written to the backend log, nothing is sent and nothing costs credit.
+   * Shared secret for admin-only endpoints (POST /api/alerts/test) as X-Admin-Key.
+   * Required in production.
    */
-  SMS_PROVIDER: z.preprocess(blankToUndefined, z.enum(['console', 'semaphore']).default('console')),
-  /** Secret. Only needed with SMS_PROVIDER=semaphore. Never commit it. */
+  ADMIN_API_KEY: optionalString(
+    z.string().min(16, 'must be at least 16 characters (use a long random string)'),
+  ),
+  /**
+   * SMS alerts (docs/setup-sms.md). true (the default) = every SMS is recorded and
+   * logged as "dry_run" and the provider is never called: no credit is used.
+   */
+  SMS_DRY_RUN: flag('true'),
+  /** Who gets the SMS alerts. Empty = no SMS at all. */
+  ALERT_PHONE_NUMBERS: PhoneListSchema,
+  /** Semaphore API key (secret). Required when SMS_DRY_RUN=false. Never commit it. */
   SEMAPHORE_API_KEY: optionalString(z.string().min(1)),
   /** Sender name registered with Semaphore; empty = your account's default. */
   SEMAPHORE_SENDER_NAME: optionalString(z.string().min(1).max(11)),
   /** Safety limit: at most this many alert SMS per rolling 24 hours (test SMS excluded). */
   SMS_DAILY_CAP: z.preprocess(blankToUndefined, z.coerce.number().int().min(1).max(200).default(10)),
+  /** Text "greenhouse offline" after this many minutes without readings. */
+  SMS_OFFLINE_AFTER_MINUTES: z.preprocess(
+    blankToUndefined,
+    z.coerce.number().int().min(1).max(1440).default(10),
+  ),
   /**
    * Dev-only "Presentation tools" of the app (heat-wave / dry-soil scenarios for the
    * simulator). Keep it off (the default) except when demonstrating: when false the
@@ -110,12 +153,31 @@ const EnvSchema = z.object({
 });
 
 const parsed = EnvSchema.superRefine((e, ctx) => {
-  if (e.SMS_PROVIDER === 'semaphore' && e.SEMAPHORE_API_KEY === undefined) {
+  if (!e.SMS_DRY_RUN && e.SEMAPHORE_API_KEY === undefined) {
     ctx.addIssue({
       code: 'custom',
       path: ['SEMAPHORE_API_KEY'],
-      message: 'is required when SMS_PROVIDER=semaphore',
+      message: 'is required when SMS_DRY_RUN=false (real SMS)',
     });
+  }
+  if (e.NODE_ENV === 'production' && e.ADMIN_API_KEY === undefined) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['ADMIN_API_KEY'],
+      message: 'is required in production (protects POST /api/alerts/test)',
+    });
+  }
+  // The .env.example placeholders must never protect a real deployment.
+  if (e.NODE_ENV === 'production') {
+    for (const key of ['DEVICE_API_KEY', 'ADMIN_API_KEY'] as const) {
+      if (e[key]?.startsWith('change-me')) {
+        ctx.addIssue({
+          code: 'custom',
+          path: [key],
+          message: 'still has the .env.example placeholder: set a long random value',
+        });
+      }
+    }
   }
 }).safeParse(process.env);
 

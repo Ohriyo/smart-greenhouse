@@ -1,14 +1,10 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import {
-  createConsoleProvider,
-  createSemaphoreProvider,
-  createSmsProvider,
-  maskPhone,
-} from './provider.js';
+import { createSemaphoreProvider, createSmsProvider, SEMAPHORE_URL } from './provider.js';
 
 const KEY = 'sk_live_SECRET123';
+const TO = ['09171234567', '09187654321'];
 
 interface Captured {
   url: string;
@@ -17,8 +13,8 @@ interface Captured {
   form: URLSearchParams;
 }
 
-/** A fetch that answers with `reply` and records the request. */
-function fakeFetch(reply: () => Response | Promise<Response>) {
+/** A fetch that answers with the next scripted reply (Response, or an error to throw). */
+function scriptedFetch(...replies: (() => Response | Promise<Response>)[]) {
   const calls: Captured[] = [];
   const fetchFn = ((input: string | URL | Request, init?: RequestInit) => {
     const headers = new Headers(init?.headers);
@@ -28,129 +24,142 @@ function fakeFetch(reply: () => Response | Promise<Response>) {
       contentType: headers.get('content-type') ?? undefined,
       form: new URLSearchParams(init?.body instanceof URLSearchParams ? init.body : undefined),
     });
-    return Promise.resolve(reply());
+    const reply = replies[Math.min(calls.length - 1, replies.length - 1)];
+    if (!reply) throw new Error('no scripted reply');
+    // A reply that never resolves until aborted (timeout tests).
+    return new Promise<Response>((resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => {
+        reject(new DOMException('aborted', 'AbortError'));
+      });
+      Promise.resolve()
+        .then(reply)
+        .then(resolve, (err: unknown) => {
+          reject(err instanceof Error ? err : new Error(String(err)));
+        });
+    });
   }) as typeof fetch;
   return { fetchFn, calls };
 }
 
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+const queued = () =>
+  json([
+    { message_id: 1, recipient: '639171234567', status: 'Queued' },
+    { message_id: 2, recipient: '639187654321', status: 'Queued' },
+  ]);
+const never = () => new Promise<Response>(() => undefined);
 
-describe('Semaphore provider', () => {
-  it('posts a form-encoded message and returns the message id', async () => {
-    const { fetchFn, calls } = fakeFetch(() => json([{ message_id: 12345, status: 'Queued' }]));
-    const p = createSemaphoreProvider({ apiKey: KEY, senderName: 'ETANIM', fetchFn });
-    const result = await p.send('+639171234567', 'ETanim test: SMS alerts are working.');
+function provider(fetchFn: typeof fetch, senderName?: string) {
+  return createSemaphoreProvider({ apiKey: KEY, senderName, fetchFn, timeoutMs: 50, retryDelayMs: 0 });
+}
 
-    assert.deepEqual(result, { id: '12345' });
+describe('Semaphore provider: request', () => {
+  it('posts one form-encoded request with all recipients, comma-separated', async () => {
+    const { fetchFn, calls } = scriptedFetch(queued);
+    const result = await provider(fetchFn, 'ETANIM').send(TO, '[Greenhouse] hello');
+
+    assert.equal(result.ok, true);
+    assert.equal(result.attempts, 1);
+    assert.equal(calls.length, 1);
     const call = calls[0];
     assert.ok(call);
+    assert.equal(call.url, SEMAPHORE_URL);
     assert.equal(call.url, 'https://api.semaphore.co/api/v4/messages');
     assert.equal(call.method, 'POST');
     assert.equal(call.contentType, 'application/x-www-form-urlencoded');
     assert.equal(call.form.get('apikey'), KEY);
-    assert.equal(call.form.get('number'), '639171234567', 'the "+" is dropped');
-    assert.equal(call.form.get('message'), 'ETanim test: SMS alerts are working.');
+    assert.equal(call.form.get('number'), '09171234567,09187654321');
+    assert.equal(call.form.get('message'), '[Greenhouse] hello');
     assert.equal(call.form.get('sendername'), 'ETANIM');
   });
 
   it('omits sendername when none is configured (the account default is used)', async () => {
-    const { fetchFn, calls } = fakeFetch(() => json([{ message_id: '1', status: 'Pending' }]));
-    await createSemaphoreProvider({ apiKey: KEY, fetchFn }).send('+639171234567', 'x');
+    const { fetchFn, calls } = scriptedFetch(queued);
+    await provider(fetchFn).send(TO, 'x');
     assert.equal(calls[0]?.form.has('sendername'), false);
   });
 
-  it('a "Failed" or "Refunded" record is an error', async () => {
-    for (const status of ['Failed', 'Refunded']) {
-      const { fetchFn } = fakeFetch(() => json([{ message_id: 7, status }]));
-      await assert.rejects(
-        createSemaphoreProvider({ apiKey: KEY, fetchFn }).send('+639171234567', 'x'),
-        new RegExp(`reports the message as ${status.toLowerCase()}`),
-      );
-    }
-  });
-
-  it('an HTTP error says the status', async () => {
-    const { fetchFn } = fakeFetch(() => json({ message: 'Unauthenticated.' }, 401));
-    await assert.rejects(
-      createSemaphoreProvider({ apiKey: KEY, fetchFn }).send('+639171234567', 'x'),
-      /HTTP 401.*Unauthenticated/,
-    );
-  });
-
-  it('an error body with HTTP 200 (e.g. no sender name) is rejected, not treated as sent', async () => {
-    const { fetchFn } = fakeFetch(() =>
-      json({ sendername: ['The selected sendername is invalid.'] }),
-    );
-    await assert.rejects(
-      createSemaphoreProvider({ apiKey: KEY, senderName: 'NOPE', fetchFn }).send(
-        '+639171234567',
-        'x',
-      ),
-      /rejected the message.*sendername is invalid/,
-    );
-  });
-
-  it('an unreadable answer is an error', async () => {
-    const { fetchFn } = fakeFetch(() => new Response('<html>oops</html>', { status: 200 }));
-    await assert.rejects(
-      createSemaphoreProvider({ apiKey: KEY, fetchFn }).send('+639171234567', 'x'),
-      /unreadable answer/,
-    );
-  });
-
-  it('no internet gives a plain explanation', async () => {
-    const fetchFn = (() => Promise.reject(new TypeError('fetch failed'))) as typeof fetch;
-    await assert.rejects(
-      createSemaphoreProvider({ apiKey: KEY, fetchFn }).send('+639171234567', 'x'),
-      /Could not reach Semaphore/,
-    );
-  });
-
-  it('a slow server times out', async () => {
-    const fetchFn = ((_url: string, init?: RequestInit) =>
-      new Promise((_resolve, reject) => {
-        init?.signal?.addEventListener('abort', () => {
-          reject(new DOMException('aborted', 'AbortError'));
-        });
-      })) as unknown as typeof fetch;
-    await assert.rejects(
-      createSemaphoreProvider({ apiKey: KEY, fetchFn, timeoutMs: 20 }).send('+639171234567', 'x'),
-      /Could not reach Semaphore/,
-    );
-  });
-
-  it('never puts the API key into an error message', async () => {
-    const { fetchFn } = fakeFetch(() => json({ error: `invalid key ${KEY}` }, 403));
-    await assert.rejects(
-      createSemaphoreProvider({ apiKey: KEY, fetchFn }).send('+639171234567', 'x'),
-      (err: Error) => {
-        assert.ok(!err.message.includes(KEY), err.message);
-        assert.match(err.message, /\*\*\*/);
-        return true;
-      },
-    );
+  it('refuses text that starts with "TEST" (Semaphore silently drops it)', async () => {
+    const { fetchFn, calls } = scriptedFetch(queued);
+    const result = await provider(fetchFn).send(TO, 'Test: hello');
+    assert.equal(result.ok, false);
+    assert.equal(calls.length, 0);
   });
 });
 
-describe('providers', () => {
-  it('test mode sends nothing and says so', async () => {
-    const p = createConsoleProvider();
-    assert.equal(p.simulated, true);
-    assert.deepEqual(await p.send('+639171234567', 'hello'), { id: null });
+describe('Semaphore provider: answers, timeout and retry', () => {
+  it('never puts the API key in the result, and masks numbers', async () => {
+    const { fetchFn } = scriptedFetch(queued);
+    const result = await provider(fetchFn).send(TO, 'x');
+    assert.equal(result.providerResponse.includes('639171234567'), false);
+    assert.match(result.providerResponse, /"recipient":"639•••••4567"/);
+
+    const echo = scriptedFetch(() => json({ error: `invalid apikey ${KEY}` }));
+    const rejected = await provider(echo.fetchFn).send(TO, 'x');
+    assert.equal(rejected.providerResponse.includes(KEY), false);
+    assert.match(rejected.providerResponse, /\*\*\*/);
   });
 
-  it('createSmsProvider picks test mode unless semaphore is fully configured', () => {
-    assert.equal(createSmsProvider({ SMS_PROVIDER: 'console' }).name, 'console');
-    assert.equal(createSmsProvider({ SMS_PROVIDER: 'semaphore' }).name, 'console');
-    assert.equal(
-      createSmsProvider({ SMS_PROVIDER: 'semaphore', SEMAPHORE_API_KEY: KEY }).name,
-      'semaphore',
+  it('a 4xx is final: no retry', async () => {
+    const { fetchFn, calls } = scriptedFetch(() => json({ message: 'Unauthorized' }, 401));
+    const result = await provider(fetchFn).send(TO, 'x');
+    assert.equal(result.ok, false);
+    assert.equal(calls.length, 1);
+    assert.match(result.providerResponse, /HTTP 401/);
+  });
+
+  it('a non-record answer (e.g. wrong key, no sender name) is final: no retry', async () => {
+    const { fetchFn, calls } = scriptedFetch(() => json({ sendername: ['invalid'] }));
+    const result = await provider(fetchFn).send(TO, 'x');
+    assert.equal(result.ok, false);
+    assert.equal(calls.length, 1);
+  });
+
+  it('a 5xx is retried once and can then succeed', async () => {
+    const { fetchFn, calls } = scriptedFetch(() => json({}, 503), queued);
+    const result = await provider(fetchFn).send(TO, 'x');
+    assert.equal(result.ok, true);
+    assert.equal(result.attempts, 2);
+    assert.equal(calls.length, 2);
+    assert.match(result.providerResponse, /retried after "HTTP 503/);
+  });
+
+  it('a network error is retried once, then reported as failed', async () => {
+    const { fetchFn, calls } = scriptedFetch(() => {
+      throw new TypeError('fetch failed');
+    });
+    const result = await provider(fetchFn).send(TO, 'x');
+    assert.equal(result.ok, false);
+    assert.equal(result.attempts, 2);
+    assert.equal(calls.length, 2);
+    assert.match(result.providerResponse, /network error/);
+  });
+
+  it('a timeout is retried once, then reported as failed', async () => {
+    const { fetchFn, calls } = scriptedFetch(never);
+    const result = await provider(fetchFn).send(TO, 'x');
+    assert.equal(result.ok, false);
+    assert.equal(calls.length, 2);
+    assert.match(result.providerResponse, /no answer within/);
+  });
+
+  it('messages the network rejected count as failed; one accepted recipient is enough', async () => {
+    const failed = scriptedFetch(() => json([{ message_id: 1, status: 'Failed' }]));
+    assert.equal((await provider(failed.fetchFn).send(TO, 'x')).ok, false);
+    const mixed = scriptedFetch(() =>
+      json([
+        { message_id: 1, status: 'Refunded' },
+        { message_id: 2, status: 'Pending' },
+      ]),
     );
+    assert.equal((await provider(mixed.fetchFn).send(TO, 'x')).ok, true);
   });
+});
 
-  it('masks phone numbers for logs', () => {
-    assert.equal(maskPhone('+639171234567'), '+63••••••4567');
-    assert.equal(maskPhone('123'), '••••');
+describe('createSmsProvider', () => {
+  it('needs an API key', () => {
+    assert.equal(createSmsProvider({}), null);
+    assert.equal(createSmsProvider({ SEMAPHORE_API_KEY: KEY })?.name, 'semaphore');
   });
 });

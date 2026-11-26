@@ -26,6 +26,8 @@ const DB_CHECK_TIMEOUT_MS = 3_000;
 export interface AppConfig {
   /** DEVICE_API_KEY: required as X-Device-Key on POST /api/readings. */
   deviceApiKey: string;
+  /** ADMIN_API_KEY: required as X-Admin-Key on POST /api/alerts/test (unset = 503). */
+  adminApiKey: string | undefined;
   /** CORS_ORIGIN entries (browser origins of the web app). */
   corsOrigins: readonly string[];
   /** DEFAULT_DEVICE_ID. */
@@ -136,7 +138,7 @@ export function createApp(deps: AppDeps): Express {
   app.use('/api/stats', statsRouter({ defaultDeviceId: config.defaultDeviceId }));
   app.use('/api/thresholds', thresholdsRouter({ defaultDeviceId: config.defaultDeviceId }));
   app.use('/api/devices', devicesRouter(commands, realtime));
-  app.use('/api/alerts', alertsRouter());
+  app.use('/api/alerts', alertsRouter(sms, config.adminApiKey));
   app.use('/api/sms', smsRouter(sms));
   if (devTools.enabled) app.use('/api/dev', devRouter(devTools));
   app.use('/api', notificationsRouter(push));

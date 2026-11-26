@@ -2,6 +2,7 @@ import { prisma } from '../db.js';
 import type { Alert, Prisma } from '../generated/prisma/client.js';
 import type { AlertMetric, AlertType, Severity } from '../domain/schemas.js';
 import { ApiError } from '../http/errors.js';
+import { toSmsAlertRow, type SmsAlertRow } from '../sms/store.js';
 
 export interface NewAlert {
   deviceId: string;
@@ -74,6 +75,20 @@ export async function listAlerts(q: AlertListQuery): Promise<AlertPage> {
     nextCursor: hasMore && last ? String(last.id) : null,
     unreadCount,
   };
+}
+
+/** The newest SMS attempt of each alert (alerts without one are absent from the map). */
+export async function latestSmsByAlert(alertIds: number[]): Promise<Map<number, SmsAlertRow>> {
+  const result = new Map<number, SmsAlertRow>();
+  if (alertIds.length === 0) return result;
+  const rows = await prisma.smsAlert.findMany({
+    where: { alertId: { in: alertIds } },
+    orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+  });
+  for (const row of rows) {
+    if (row.alertId !== null && !result.has(row.alertId)) result.set(row.alertId, toSmsAlertRow(row));
+  }
+  return result;
 }
 
 /** Idempotent: an already-read alert keeps its original readAt. */

@@ -1,120 +1,163 @@
 import { z } from 'zod';
-import { createLogger } from '../lib/logger.js';
+import { maskPhonesInText } from './phone.js';
 
-const log = createLogger('sms');
+/** Result of one send (after the retry, if any). Never contains the API key. */
+export interface SmsSendResult {
+  /** true when the provider accepted the message for at least one recipient. */
+  ok: boolean;
+  /** Short answer or error for the log table (key removed, numbers masked, ≤ 500 chars). */
+  providerResponse: string;
+  /** HTTP requests made: 1, or 2 after a retry. */
+  attempts: number;
+}
 
-/** Something that can send one SMS. Add a provider by implementing this. */
+/** Something that can send one SMS to several numbers. Add a provider by implementing this. */
 export interface SmsProvider {
-  readonly name: 'console' | 'semaphore';
-  /** true = nothing leaves this computer (test mode). */
-  readonly simulated: boolean;
-  /** Resolves when the provider accepted the message; throws with a readable reason otherwise. */
-  send(to: string, text: string): Promise<{ id: string | null }>;
+  readonly name: 'semaphore';
+  /** Never throws: failures come back as `ok: false`. */
+  send(recipients: readonly string[], text: string): Promise<SmsSendResult>;
 }
 
-/** "+63•••••4567": enough to recognise, nothing to leak into logs. */
-export function maskPhone(phone: string): string {
-  if (phone.length <= 7) return '••••';
-  return `${phone.slice(0, 3)}${'•'.repeat(phone.length - 7)}${phone.slice(-4)}`;
-}
+/** Documented in semaphore.co/docs ("Sending Messages"). */
+export const SEMAPHORE_URL = 'https://api.semaphore.co/api/v4/messages';
+export const SMS_TIMEOUT_MS = 10_000;
+const RESPONSE_MAX_CHARS = 500;
 
-/** Test mode: the message is only written to the backend log. Costs nothing. */
-export function createConsoleProvider(): SmsProvider {
-  return {
-    name: 'console',
-    simulated: true,
-    send(to, text) {
-      log.info(`[test mode, not sent] SMS to ${maskPhone(to)}: "${text}"`);
-      return Promise.resolve({ id: null });
-    },
-  };
-}
-
-const SEMAPHORE_URL = 'https://api.semaphore.co/api/v4/messages';
-
-/** Documented response: an array with one record per message (status Queued/Pending/Sent/Failed/Refunded). */
-const SemaphoreResponseSchema = z
-  .array(z.object({ message_id: z.union([z.number(), z.string()]), status: z.string() }))
+/**
+ * Documented response: one record per recipient, `status` Queued | Pending | Sent |
+ * Failed | Refunded. Other fields are ignored. The error format is NOT documented,
+ * so anything that isn't a list of records counts as a rejection.
+ */
+const SemaphoreRecordsSchema = z
+  .array(
+    z.object({
+      message_id: z.union([z.number(), z.string()]),
+      recipient: z.union([z.number(), z.string()]).optional(),
+      status: z.string(),
+    }),
+  )
   .min(1);
 
 interface SemaphoreOptions {
   apiKey: string;
   /** Registered sender name; omitted = the account's default. */
-  senderName?: string;
+  senderName?: string | undefined;
   timeoutMs?: number;
+  /** Wait before the one retry. */
+  retryDelayMs?: number;
   /** Injected in tests. */
   fetchFn?: typeof fetch;
 }
 
+type Attempt =
+  | { retry: false; result: Omit<SmsSendResult, 'attempts'> }
+  | { retry: true; result: Omit<SmsSendResult, 'attempts'> };
+
 /**
- * Semaphore (semaphore.co, Philippines): POST /api/v4/messages, form-encoded.
- * Numbers go out as 639XXXXXXXXX. The API key is never logged or put in errors.
+ * Semaphore (semaphore.co, Philippines): form-encoded POST /api/v4/messages with
+ * all recipients in one request ("number=09…,09…", up to 1000 per call).
+ * Timeout 10 s; ONE retry after a network error, a timeout or an HTTP 5xx.
+ * A 4xx or a rejected message is not retried.
+ *
+ * Retry caveat: if the first request timed out after Semaphore had already
+ * accepted it, the retry can deliver the SMS twice. Accepted trade-off for alerts.
  */
 export function createSemaphoreProvider(opts: SemaphoreOptions): SmsProvider {
-  const { apiKey, senderName, timeoutMs = 10_000, fetchFn = fetch } = opts;
-  const redact = (text: string) => text.split(apiKey).join('***').slice(0, 200);
+  const {
+    apiKey,
+    senderName,
+    timeoutMs = SMS_TIMEOUT_MS,
+    retryDelayMs = 1_000,
+    fetchFn = fetch,
+  } = opts;
+
+  /** No API key, no full phone numbers, bounded length. */
+  const clean = (text: string) =>
+    maskPhonesInText(text.split(apiKey).join('***')).slice(0, RESPONSE_MAX_CHARS);
+
+  async function attempt(form: URLSearchParams): Promise<Attempt> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      controller.abort();
+    }, timeoutMs);
+    let res: Response;
+    let raw: string;
+    try {
+      res = await fetchFn(SEMAPHORE_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: form,
+        signal: controller.signal,
+      });
+      raw = await res.text();
+    } catch (err) {
+      const why = controller.signal.aborted
+        ? `no answer within ${Math.round(timeoutMs / 1000)} s`
+        : `network error: ${err instanceof Error ? err.message : String(err)}`;
+      return { retry: true, result: { ok: false, providerResponse: clean(why) } };
+    } finally {
+      clearTimeout(timer);
+    }
+
+    if (res.status >= 500) {
+      return { retry: true, result: { ok: false, providerResponse: clean(`HTTP ${res.status}: ${raw}`) } };
+    }
+    if (!res.ok) {
+      return { retry: false, result: { ok: false, providerResponse: clean(`HTTP ${res.status}: ${raw}`) } };
+    }
+
+    let json: unknown;
+    try {
+      json = JSON.parse(raw) as unknown;
+    } catch {
+      return { retry: false, result: { ok: false, providerResponse: clean(`unreadable answer: ${raw}`) } };
+    }
+    const records = SemaphoreRecordsSchema.safeParse(json);
+    // Errors such as a wrong key or an unregistered sender name come back as a non-record body.
+    if (!records.success) {
+      return { retry: false, result: { ok: false, providerResponse: clean(`rejected: ${raw}`) } };
+    }
+    const accepted = records.data.some((r) => !/^(failed|refunded)$/i.test(r.status));
+    const summary = JSON.stringify(
+      records.data.map((r) => ({ message_id: r.message_id, recipient: r.recipient, status: r.status })),
+    );
+    return { retry: false, result: { ok: accepted, providerResponse: clean(summary) } };
+  }
 
   return {
     name: 'semaphore',
-    simulated: false,
-    async send(to, text) {
-      const form = new URLSearchParams({
-        apikey: apiKey,
-        number: to.replace(/^\+/, ''),
-        message: text,
-      });
+    async send(recipients, text) {
+      // Semaphore silently drops messages that start with "TEST" (their docs).
+      if (/^\s*test/i.test(text)) {
+        return {
+          ok: false,
+          providerResponse: 'not sent: Semaphore silently ignores messages that start with "TEST"',
+          attempts: 0,
+        };
+      }
+      const form = new URLSearchParams({ apikey: apiKey, number: recipients.join(','), message: text });
       if (senderName) form.set('sendername', senderName);
 
-      const controller = new AbortController();
-      const timer = setTimeout(() => {
-        controller.abort();
-      }, timeoutMs);
-      let res: Response;
-      try {
-        res = await fetchFn(SEMAPHORE_URL, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-          body: form,
-          signal: controller.signal,
-        });
-      } catch {
-        throw new Error('Could not reach Semaphore (check the laptop’s internet connection)');
-      } finally {
-        clearTimeout(timer);
-      }
-
-      const raw = await res.text();
-      if (!res.ok) throw new Error(`Semaphore answered HTTP ${res.status}: ${redact(raw)}`);
-
-      let json: unknown;
-      try {
-        json = JSON.parse(raw) as unknown;
-      } catch {
-        throw new Error(`Semaphore sent an unreadable answer: ${redact(raw)}`);
-      }
-      const parsed = SemaphoreResponseSchema.safeParse(json);
-      // Errors such as a wrong key or a missing sender name come back as a non-record body.
-      if (!parsed.success) throw new Error(`Semaphore rejected the message: ${redact(raw)}`);
-      const first = parsed.data[0];
-      if (!first) throw new Error('Semaphore returned no message record');
-      if (/^(failed|refunded)$/i.test(first.status)) {
-        throw new Error(`Semaphore reports the message as ${first.status.toLowerCase()}`);
-      }
-      return { id: String(first.message_id) };
+      const first = await attempt(form);
+      if (!first.retry) return { ...first.result, attempts: 1 };
+      await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+      const second = await attempt(form);
+      return {
+        ...second.result,
+        providerResponse: clean(`retried after "${first.result.providerResponse}"; ${second.result.providerResponse}`),
+        attempts: 2,
+      };
     },
   };
 }
 
 export function createSmsProvider(config: {
-  SMS_PROVIDER: 'console' | 'semaphore';
   SEMAPHORE_API_KEY?: string | undefined;
   SEMAPHORE_SENDER_NAME?: string | undefined;
-}): SmsProvider {
-  if (config.SMS_PROVIDER === 'semaphore' && config.SEMAPHORE_API_KEY) {
-    return createSemaphoreProvider({
-      apiKey: config.SEMAPHORE_API_KEY,
-      senderName: config.SEMAPHORE_SENDER_NAME,
-    });
-  }
-  return createConsoleProvider();
+}): SmsProvider | null {
+  if (!config.SEMAPHORE_API_KEY) return null;
+  return createSemaphoreProvider({
+    apiKey: config.SEMAPHORE_API_KEY,
+    senderName: config.SEMAPHORE_SENDER_NAME,
+  });
 }

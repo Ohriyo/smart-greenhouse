@@ -1,40 +1,32 @@
-import { prisma } from '../db.js';
+// SMS log types and pure helpers. No database import here (the Prisma
+// implementation is in prismaStore.ts), so the SMS logic is testable without one.
+import type { SmsAlert } from '../generated/prisma/client.js';
 
-const SETTINGS_ID = 1;
+export type SmsKind = 'threshold' | 'recovery' | 'offline' | 'online' | 'test';
+export type SmsCondition = 'HIGH' | 'LOW' | 'NORMAL' | 'OFFLINE' | 'ONLINE' | 'TEST';
+export type SmsStatus = 'sent' | 'failed' | 'skipped_cooldown' | 'skipped_daily_cap' | 'dry_run';
 
-export interface SmsSettingsRow {
-  enabled: boolean;
-  phone: string | null;
-  offlineAfterMin: number;
-  updatedAt: Date;
-}
+/** Statuses that count as "the owner was told" (cooldown, back-to-normal pairing). */
+export const DELIVERED: readonly SmsStatus[] = ['sent', 'dry_run'];
 
-export type SmsKind = 'critical' | 'offline' | 'closing' | 'test';
-export type SmsStatus = 'sent' | 'failed' | 'skipped';
-
-export interface NewSmsLog {
+export interface NewSmsAlert {
+  createdAt: Date;
   kind: SmsKind;
   deviceId: string | null;
-  metric: string | null;
-  body: string;
+  alertId: number | null;
+  sensor: string | null;
+  condition: SmsCondition;
+  value: number | null;
+  threshold: number | null;
+  message: string;
+  /** Masked, comma-separated. */
+  recipients: string;
   status: SmsStatus;
-  error: string | null;
-  providerId: string | null;
+  providerResponse: string | null;
 }
 
-export interface SmsLogRow {
-  ts: Date;
-  kind: SmsKind;
-  status: SmsStatus;
-  error: string | null;
-}
-
-export interface EpisodeRow {
+export interface SmsAlertRow extends NewSmsAlert {
   id: number;
-  deviceId: string;
-  /** "airTemp" | "humidity" | "soilMoisture" | "lux" | "offline" */
-  metric: string;
-  openedAt: Date;
 }
 
 export interface DeviceInfo {
@@ -44,85 +36,52 @@ export interface DeviceInfo {
   lastSeen: Date | null;
 }
 
+export interface SmsQuery {
+  deviceId: string;
+  /** null for offline/online. */
+  sensor: string | null;
+  conditions: readonly SmsCondition[];
+}
+
 /** Everything the SMS logic needs from the database. Faked in tests. */
 export interface SmsStore {
-  getSettings(): Promise<SmsSettingsRow>;
-  saveSettings(body: {
-    enabled: boolean;
-    phone: string | null;
-    offlineAfterMin: number;
-  }): Promise<SmsSettingsRow>;
-  /** Alert SMS (not tests) that were sent since `since`: the daily cap. */
+  record(row: NewSmsAlert): Promise<SmsAlertRow>;
+  /** Newest delivered (sent / dry run) SMS matching the query. */
+  lastDelivered(q: SmsQuery): Promise<SmsAlertRow | null>;
+  /** Newest attempt of any status matching the query. */
+  lastAttempt(q: SmsQuery): Promise<SmsAlertRow | null>;
+  /** Alert SMS actually sent since `since` (tests and dry runs excluded): the daily cap. */
   countSentSince(since: Date): Promise<number>;
   /** Test SMS attempted since `since`: throttling. */
   countTestsSince(since: Date): Promise<number>;
-  addLog(entry: NewSmsLog): Promise<void>;
-  lastLog(): Promise<SmsLogRow | null>;
-  findOpenEpisode(deviceId: string, metric: string): Promise<EpisodeRow | null>;
-  listOpenEpisodes(): Promise<EpisodeRow[]>;
-  openEpisode(deviceId: string, metric: string, at: Date): Promise<void>;
-  closeEpisode(id: number, at: Date): Promise<void>;
-  getDevice(id: string): Promise<DeviceInfo | null>;
+  /** Newest attempts first. */
+  recent(limit: number): Promise<SmsAlertRow[]>;
   listDevices(): Promise<DeviceInfo[]>;
+  /** The newest in-app alert of that type for the device (to link offline/online SMS). */
+  latestAlertId(deviceId: string, type: 'offline' | 'online'): Promise<number | null>;
 }
 
-export function createPrismaSmsStore(): SmsStore {
+const KINDS: readonly SmsKind[] = ['threshold', 'recovery', 'offline', 'online', 'test'];
+const CONDITIONS: readonly SmsCondition[] = ['HIGH', 'LOW', 'NORMAL', 'OFFLINE', 'ONLINE', 'TEST'];
+const STATUSES: readonly SmsStatus[] = [
+  'sent',
+  'failed',
+  'skipped_cooldown',
+  'skipped_daily_cap',
+  'dry_run',
+];
+
+function oneOf<T extends string>(allowed: readonly T[], value: string, field: string): T {
+  const found = allowed.find((a) => a === value);
+  if (found === undefined) throw new Error(`SmsAlert.${field} has unexpected value "${value}"`);
+  return found;
+}
+
+export function toSmsAlertRow(r: SmsAlert): SmsAlertRow {
   return {
-    getSettings: () =>
-      prisma.smsSettings.upsert({
-        where: { id: SETTINGS_ID },
-        update: {},
-        create: { id: SETTINGS_ID },
-      }),
-
-    saveSettings: (body) =>
-      prisma.smsSettings.upsert({
-        where: { id: SETTINGS_ID },
-        update: body,
-        create: { id: SETTINGS_ID, ...body },
-      }),
-
-    countSentSince: (since) =>
-      prisma.smsLog.count({
-        where: { status: 'sent', kind: { not: 'test' }, ts: { gte: since } },
-      }),
-
-    countTestsSince: (since) =>
-      prisma.smsLog.count({ where: { kind: 'test', ts: { gte: since } } }),
-
-    async addLog(entry) {
-      await prisma.smsLog.create({ data: entry });
-    },
-
-    async lastLog() {
-      const row = await prisma.smsLog.findFirst({ orderBy: { id: 'desc' } });
-      if (!row) return null;
-      return {
-        ts: row.ts,
-        kind: row.kind as SmsKind,
-        status: row.status as SmsStatus,
-        error: row.error,
-      };
-    },
-
-    findOpenEpisode: (deviceId, metric) =>
-      prisma.smsEpisode.findFirst({
-        where: { deviceId, metric, closedAt: null },
-        orderBy: { id: 'desc' },
-      }),
-
-    listOpenEpisodes: () => prisma.smsEpisode.findMany({ where: { closedAt: null } }),
-
-    async openEpisode(deviceId, metric, at) {
-      await prisma.smsEpisode.create({ data: { deviceId, metric, openedAt: at } });
-    },
-
-    async closeEpisode(id, at) {
-      await prisma.smsEpisode.update({ where: { id }, data: { closedAt: at } });
-    },
-
-    getDevice: (id) => prisma.device.findUnique({ where: { id } }),
-
-    listDevices: () => prisma.device.findMany(),
+    ...r,
+    kind: oneOf(KINDS, r.kind, 'kind'),
+    condition: oneOf(CONDITIONS, r.condition, 'condition'),
+    status: oneOf(STATUSES, r.status, 'status'),
   };
 }

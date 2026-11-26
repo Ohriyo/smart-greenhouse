@@ -67,18 +67,18 @@ async function databaseStatus(): Promise<'ok' | 'error'> {
  */
 const requestLog: RequestHandler = (req, res, next) => {
   const started = performance.now();
+  // Read now: inside a mounted router (e.g. /api/readings) req.path loses its prefix.
+  const { method, path } = req;
   res.on('finish', () => {
     const fields = {
-      method: req.method,
-      path: req.path,
+      method,
+      path,
       status: res.statusCode,
       ms: Math.round(performance.now() - started),
     };
-    const line = `${fields.method} ${fields.path} ${fields.status} ${fields.ms} ms`;
+    const line = `${method} ${path} ${fields.status} ${fields.ms} ms`;
     const routine =
-      req.method === 'GET' ||
-      req.method === 'OPTIONS' ||
-      (req.method === 'POST' && req.path === '/api/readings');
+      method === 'GET' || method === 'OPTIONS' || (method === 'POST' && path === '/api/readings');
     if (res.statusCode >= 500) log.error(line, fields);
     else if (res.statusCode >= 400) log.warn(line, fields);
     else if (routine) log.debug(line, fields);

@@ -1,4 +1,4 @@
-import pg from 'pg';
+import type pg from 'pg';
 
 const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
 
@@ -11,6 +11,10 @@ const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
  *   whatever the URL says. The URL's `sslmode`/`channel_binding` options are
  *   applied here instead (pg would otherwise warn that it treats
  *   `sslmode=require` as `verify-full`).
+ *
+ * Sessions must run in UTC (see the `database_timezone_utc` migration). That is
+ * a database default, not a connection option: Neon's pooled connections reject
+ * the `options` startup parameter.
  */
 export function poolConfig(url: string): pg.PoolConfig {
   const parsed = new URL(url);
@@ -33,23 +37,4 @@ export function poolConfig(url: string): pg.PoolConfig {
     // SCRAM-SHA-256-PLUS when the server offers it (Neon does).
     enableChannelBinding: true,
   };
-}
-
-/**
- * The connection pool. Every new connection switches to UTC before its first
- * query: @prisma/adapter-pg (7.x) writes DateTime values as UTC wall-clock text
- * without an offset and reads timestamptz values back as if they were UTC, so
- * both are only right in a UTC session. Neon defaults to UTC, but PostgreSQL
- * installed on Windows takes the PC's zone (Asia/Manila): every stored time
- * would be 8 h early and the history/heatmap buckets shifted. `SET TIME ZONE`,
- * unlike a startup `options` parameter, also works through a pooler such as
- * Neon's PgBouncer, which tracks TimeZone per client.
- */
-export function createPool(url: string, onSetupError: (err: unknown) => void): pg.Pool {
-  const pool = new pg.Pool(poolConfig(url));
-  pool.on('connect', (client) => {
-    // A connection runs its queries in order: this one goes before the caller's.
-    client.query("SET TIME ZONE 'UTC'").catch(onSetupError);
-  });
-  return pool;
 }

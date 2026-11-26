@@ -11,13 +11,16 @@ function sendErrorMessage(err: unknown): string {
   if (err instanceof HttpError) {
     if (err.code === 'DEVICE_OFFLINE')
       return 'The greenhouse is offline. Try again when it is back.';
-    if (err.status === 503) return 'The server is not connected to the MQTT broker.';
   }
   return describeError(err);
 }
 
-/** How long we wait for the greenhouse to report its new calibration. */
-export const CALIBRATION_CONFIRM_TIMEOUT_MS = 10_000;
+/**
+ * How long we wait for the greenhouse to report its new calibration: the command
+ * goes out with its next reading (≤ 30 s), it answers with a reading right away,
+ * and without the socket the app sees that with its next 10 s poll.
+ */
+export const CALIBRATION_CONFIRM_TIMEOUT_MS = 75_000;
 
 const NAME: Record<SoilPoint, string> = { dry: 'Dry', wet: 'Wet' };
 
@@ -31,7 +34,8 @@ interface Pending {
 /**
  * "Capture dry/wet value": the greenhouse stores its *current* soil reading.
  * Confirmed only when the device reports a different soilDryMv/soilWetMv
- * (device:status). No change within 10 s → told to the user, nothing is assumed.
+ * (device:status or the next poll). No change within 75 s → told to the user,
+ * nothing is assumed.
  */
 export function useCalibrateSoil(deviceId: string | undefined) {
   const toast = useToast();

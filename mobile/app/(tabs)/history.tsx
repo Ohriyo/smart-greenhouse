@@ -1,7 +1,8 @@
 import { useLocalSearchParams } from 'expo-router';
 import { useMemo, useState } from 'react';
-import { RefreshControl, ScrollView, Share, StyleSheet, View } from 'react-native';
+import { Platform, RefreshControl, ScrollView, Share, StyleSheet, View } from 'react-native';
 
+import { ServerWaking } from '@/components/greenhouse';
 import {
   BottomSheet,
   Card,
@@ -39,6 +40,10 @@ const RANGE_OPTIONS: readonly SegmentOption<HistoryRange>[] = [
   { value: '30d', label: '30d', accessibilityLabel: 'Last 30 days' },
 ];
 const METRIC_ORDER: AlertMetric[] = ['airTemp', 'humidity', 'soilMoisture', 'lux'];
+
+/** On the web, Share needs the browser's share sheet (navigator.share), which not every browser has. */
+const CAN_SHARE =
+  Platform.OS !== 'web' || (typeof navigator !== 'undefined' && 'share' in navigator);
 
 /** Lowest min, highest max and the reading-weighted average over all buckets. */
 function summarize(points: readonly HistoryPoint[]) {
@@ -183,6 +188,7 @@ export default function HistoryScreen() {
         </Card>
       ) : loading || !history.data ? (
         <View accessible accessibilityLabel="Loading history" style={styles.loading}>
+          <ServerWaking loading={history.isFetching} />
           <Skeleton height={260} radius={18} />
           <View style={styles.row}>
             <Skeleton height={76} radius={16} width="31%" />
@@ -231,12 +237,14 @@ export default function HistoryScreen() {
             void refresh();
           }}
         />
-        <ListRow
-          title="Share summary"
-          subtitle={`${meta.label}, ${RANGE_SPOKEN[range]}: min, max, average`}
-          icon="share-social-outline"
-          onPress={() => void share()}
-        />
+        {CAN_SHARE ? (
+          <ListRow
+            title="Share summary"
+            subtitle={`${meta.label}, ${RANGE_SPOKEN[range]}: min, max, average`}
+            icon="share-social-outline"
+            onPress={() => void share()}
+          />
+        ) : null}
       </BottomSheet>
     </Screen>
   );

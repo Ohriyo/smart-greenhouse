@@ -1,16 +1,23 @@
 import type { z } from 'zod';
 
-import { useSettingsStore } from '@/store/settingsStore';
+import { API_URL } from '@/constants/config';
 import { ApiErrorBodySchema } from '@/types/api';
 
-import { HttpError, NetworkError, TimeoutError, ValidationError } from './errors';
+import {
+  HttpError,
+  NetworkError,
+  NO_SERVER_ADDRESS,
+  TimeoutError,
+  ValidationError,
+} from './errors';
 
-export const DEFAULT_TIMEOUT_MS = 8000;
+/** A sleeping free-tier server can take longer: the screens then offer "Retry". */
+export const DEFAULT_TIMEOUT_MS = 15_000;
 
 export interface RequestOptions {
   method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
   body?: unknown;
-  /** Overrides the saved server URL (used by "Test connection"). */
+  /** Another server than the build's EXPO_PUBLIC_API_URL (unregistering an old push token). */
   baseUrl?: string;
   timeoutMs?: number;
   /** Caller's abort signal (e.g. from TanStack Query). */
@@ -18,9 +25,10 @@ export interface RequestOptions {
 }
 
 /**
- * Fetch wrapper: base URL from settings, timeout via AbortController, JSON body,
- * Zod-validated response, and typed errors (Network, Timeout, Http, Validation).
- * A caller abort (signal) is re-thrown as-is so TanStack Query can ignore it.
+ * Fetch wrapper: base URL from the build (EXPO_PUBLIC_API_URL), timeout via
+ * AbortController, JSON body, Zod-validated response, and typed errors
+ * (Network, Timeout, Http, Validation). A caller abort (signal) is re-thrown
+ * as-is so TanStack Query can ignore it.
  */
 export async function apiRequest<S extends z.ZodType>(
   path: string,
@@ -28,8 +36,8 @@ export async function apiRequest<S extends z.ZodType>(
   options: RequestOptions = {},
 ): Promise<z.infer<S>> {
   const { method = 'GET', body, timeoutMs = DEFAULT_TIMEOUT_MS, signal } = options;
-  const baseUrl = options.baseUrl ?? useSettingsStore.getState().apiUrl;
-  if (!baseUrl) throw new NetworkError('No server address set (Settings)');
+  const baseUrl = options.baseUrl ?? API_URL;
+  if (!baseUrl) throw new NetworkError(NO_SERVER_ADDRESS);
 
   const controller = new AbortController();
   let timedOut = false;

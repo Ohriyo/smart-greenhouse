@@ -15,6 +15,7 @@ import { AppState, StyleSheet } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 
 import { ToastProvider } from '@/components/ui';
+import { LivePoller } from '@/features/dashboard/LivePoller';
 import { startNetworkMonitoring } from '@/services/network';
 import {
   configureForegroundPresentation,
@@ -94,6 +95,7 @@ export default function RootLayout() {
         <ThemeProvider value={navTheme}>
           <ToastProvider>
             <RealtimeBridge />
+            <LivePoller />
             <NotificationsBridge />
             {/* Follows the in-app theme choice (Light / Dark / System), not only the phone. */}
             <StatusBar style={theme.scheme === 'dark' ? 'light' : 'dark'} />

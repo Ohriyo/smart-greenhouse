@@ -1,6 +1,6 @@
 import type { IconName } from '@/components/ui/Icon';
 import type { StatusTone } from '@/theme';
-import type { Alert, AlertMetric } from '@/types/api';
+import type { Alert, AlertMetric, SmsStatus } from '@/types/api';
 import { formatMetricText, METRICS } from '@/utils/sensors';
 
 const NOUN: Record<AlertMetric, string> = {
@@ -77,4 +77,20 @@ export function alertDay(ts: string, todayStart: number): AlertDay {
   if (t >= todayStart) return 'Today';
   if (t >= todayStart - 86_400_000) return 'Yesterday';
   return 'Earlier';
+}
+
+/** SMS outcome as a short label + tone (alert cards, alert details, Settings → SMS). */
+export function smsStatusLabel(status: SmsStatus): { text: string; tone: StatusTone } {
+  switch (status) {
+    case 'sent':
+      return { text: 'SMS sent', tone: 'ok' };
+    case 'failed':
+      return { text: 'SMS failed', tone: 'danger' };
+    case 'skipped_cooldown':
+      return { text: 'SMS skipped (sent recently)', tone: 'neutral' };
+    case 'skipped_daily_cap':
+      return { text: 'SMS skipped (daily limit)', tone: 'warning' };
+    case 'dry_run':
+      return { text: 'SMS dry run (not sent)', tone: 'info' };
+  }
 }

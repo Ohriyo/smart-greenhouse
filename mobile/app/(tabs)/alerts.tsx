@@ -1,4 +1,3 @@
-import { router } from 'expo-router';
 import { useCallback, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
@@ -11,7 +10,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { AlertCard, EnableNotificationsCard } from '@/components/greenhouse';
+import { AlertCard, EnableNotificationsCard, ServerWaking } from '@/components/greenhouse';
 import {
   Button,
   Card,
@@ -160,9 +159,8 @@ export default function AlertsScreen() {
       <Screen title="Alerts" subtitle="Not connected">
         <EmptyState
           icon="server-outline"
-          title="Set your server address"
-          message="Enter your laptop's address in Settings to see alerts."
-          action={{ label: 'Open Settings', onPress: () => router.push('/settings') }}
+          title="No server address"
+          message="This build has no server address. Set EXPO_PUBLIC_API_URL and build the app again."
         />
       </Screen>
     );
@@ -182,6 +180,7 @@ export default function AlertsScreen() {
   if (query.isPending) {
     body = (
       <View style={[horizontal, styles.loading]} accessible accessibilityLabel="Loading alerts">
+        <ServerWaking loading />
         {[0, 1, 2].map((i) => (
           <Card key={i}>
             <View style={styles.skeletonRow}>

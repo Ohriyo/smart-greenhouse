@@ -68,7 +68,7 @@ export default function Gallery() {
   const [loading, setLoading] = useState(false);
   const [min, setMin] = useState('18');
   const [max, setMax] = useState('35');
-  const [url, setUrl] = useState('http://192.168.50.69:4000');
+  const [url, setUrl] = useState('https://greenhouse-api.onrender.com');
 
   const trendDomain = useMemo(() => [now - 30 * MIN, now] as const, []);
   const bandDomain = useMemo(() => [now - 24 * 60 * MIN, now] as const, []);

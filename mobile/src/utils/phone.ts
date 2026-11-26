@@ -1,4 +1,5 @@
-import { E164_PATTERN } from '@/types/api';
+/** International format: "+", then 8–15 digits, the first not 0. */
+export const E164_PATTERN = /^\+[1-9]\d{7,14}$/;
 
 /**
  * What people type → international format. Handles Philippine numbers written

@@ -1,7 +1,7 @@
-import { router } from 'expo-router';
 import { useCallback, useState } from 'react';
 import { RefreshControl, StyleSheet, View } from 'react-native';
 
+import { ServerWaking } from '@/components/greenhouse';
 import { Card, EmptyState, ErrorState, Screen, Skeleton } from '@/components/ui';
 import { CalibrationCard } from '@/features/control/CalibrationCard';
 import { ThresholdsSection } from '@/features/control/ThresholdsSection';
@@ -47,9 +47,8 @@ export default function ControlScreen() {
       <Screen title="Control" subtitle="Not connected">
         <EmptyState
           icon="server-outline"
-          title="Set your server address"
-          message="Enter your laptop's address in Settings to control the greenhouse."
-          action={{ label: 'Open Settings', onPress: () => router.push('/settings') }}
+          title="No server address"
+          message="This build has no server address. Set EXPO_PUBLIC_API_URL and build the app again."
         />
       </Screen>
     );
@@ -82,7 +81,7 @@ export default function ControlScreen() {
           <EmptyState
             icon="leaf-outline"
             title="No greenhouse yet"
-            message="Power on the ESP32 or start the simulator. It appears here automatically."
+            message="Power on the ESP32. The greenhouse appears here after its first reading."
             action={{ label: 'Refresh', onPress: () => void onRefresh() }}
           />
         </Screen>
@@ -90,6 +89,7 @@ export default function ControlScreen() {
     }
     return (
       <Screen title="Control" subtitle="Alert limits and soil calibration">
+        <ServerWaking loading />
         <LoadingCards />
       </Screen>
     );

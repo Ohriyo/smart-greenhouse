@@ -5,6 +5,8 @@ import { useEffect } from 'react';
 
 import { PushDataSchema } from '@/types/api';
 
+import { PUSH_PLATFORM } from './push';
+
 /**
  * Tapping an alert notification opens the Alerts tab, whether the app was in
  * the foreground, in the background or killed (then the tap is the "last
@@ -13,6 +15,7 @@ import { PushDataSchema } from '@/types/api';
  */
 export function useNotificationTap(queryClient: QueryClient): void {
   useEffect(() => {
+    if (!PUSH_PLATFORM) return; // no notifications in the web build
     let lastHandled: string | null = null;
 
     const open = (response: Notifications.NotificationResponse | null) => {

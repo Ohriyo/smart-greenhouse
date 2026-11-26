@@ -14,7 +14,7 @@ const PERSIST_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
  * whenever a response shape in src/types/api.ts changes, so old saved data
  * never reaches new code.
  */
-const CACHE_BUSTER = `${Constants.expoConfig?.version ?? '0'}-api9`;
+const CACHE_BUSTER = `${Constants.expoConfig?.version ?? '0'}-api10`;
 
 /** Saved for offline cold starts. History is left out: big, and refetched anyway. */
 const PERSISTED = new Set(['devices', 'latest', 'thresholds', 'alerts', 'notificationSettings']);
@@ -28,15 +28,15 @@ export function createQueryClient(): QueryClient {
   return new QueryClient({
     defaultOptions: {
       queries: {
-        staleTime: 10_000, // socket events keep the live data fresh in between
+        staleTime: 10_000, // polling and socket events keep the live data fresh in between
         gcTime: PERSIST_MAX_AGE_MS, // must be ≥ maxAge, or restored data is dropped
-        // Try even when NetInfo says offline (the LAN may still work), then pause
+        // Try even when NetInfo says offline (it can be wrong), then pause
         // retries until the network is back (onlineManager, src/services/network.ts).
         networkMode: 'offlineFirst',
-        // Retry once for network hiccups; never retry 4xx or schema mismatches.
+        // Retry once for a quick network hiccup. Not after a timeout (15 s already
+        // waited: the screen offers "Retry"), never for 4xx or schema mismatches.
         retry: (failureCount, error) =>
-          failureCount < 1 &&
-          (!(error instanceof ApiError) || error.kind === 'network' || error.kind === 'timeout'),
+          failureCount < 1 && (!(error instanceof ApiError) || error.kind === 'network'),
       },
       mutations: {
         // Never queue commands while offline: a command sent minutes later

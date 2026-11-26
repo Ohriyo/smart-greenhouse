@@ -18,8 +18,17 @@ export type SocketStatus =
   'idle' | 'connecting' | 'connected' | 'reconnecting' | 'error' | 'paused';
 
 /**
+ * The 10 s poll of the newest reading (src/features/dashboard/queries.ts), which
+ * keeps the data current even when the socket can't connect:
+ * - idle: no poll finished yet (or the app was in the background)
+ * - ok: the last poll succeeded
+ * - error: the last poll failed (server unreachable or too slow)
+ */
+export type PollStatus = 'idle' | 'ok' | 'error';
+
+/**
  * How much a device's values can be trusted right now:
- * - live: received in this session over a working connection
+ * - live: received in this session over a working connection (socket or poll)
  * - offline: the backend says the device is offline
  * - stale: last known values (restored after a restart, or no connection)
  */
@@ -40,6 +49,7 @@ interface LiveState {
   lastUpdated: Record<string, number>;
   socket: SocketStatus;
   socketError: string | null;
+  poll: PollStatus;
   /** True once the saved data has been read from storage. */
   hydrated: boolean;
 
@@ -49,6 +59,7 @@ interface LiveState {
   upsertDevice: (device: Device) => void;
   setReading: (reading: Reading) => void;
   setSocket: (status: SocketStatus, error?: string | null) => void;
+  setPoll: (status: PollStatus) => void;
 }
 
 const emptyData = {
@@ -73,6 +84,7 @@ export const useLiveStore = create<LiveState>()(
       ...emptyData,
       socket: 'idle',
       socketError: null,
+      poll: 'idle',
       hydrated: false,
 
       switchServer: (url) =>
@@ -106,6 +118,8 @@ export const useLiveStore = create<LiveState>()(
         }),
 
       setSocket: (status, error = null) => set({ socket: status, socketError: error }),
+
+      setPoll: (poll) => set((s) => (s.poll === poll ? s : { poll })),
     }),
     {
       name: 'live',
@@ -135,7 +149,8 @@ export const useLiveStore = create<LiveState>()(
 export function selectLiveness(s: LiveState, deviceId: string): Liveness {
   const updated = s.lastUpdated[deviceId];
   const offline = s.devices[deviceId]?.online === false;
-  if (s.socket === 'connected') {
+  // A working link: socket events, or the 10 s poll of the newest reading.
+  if (s.socket === 'connected' || s.poll === 'ok') {
     if (offline) return 'offline';
     return updated === undefined ? 'stale' : 'live';
   }

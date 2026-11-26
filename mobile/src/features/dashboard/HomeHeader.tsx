@@ -9,7 +9,7 @@ import Animated, {
 } from 'react-native-reanimated';
 
 import type { ConnectionState } from '@/components/greenhouse';
-import { UpdatedAgo } from '@/components/greenhouse';
+import { StaleBadge, UpdatedAgo } from '@/components/greenhouse';
 import { Eyebrow, IconButton, StatusPill, Text } from '@/components/ui';
 import { toneColors, useTheme, type StatusTone } from '@/theme';
 import { useReducedMotion } from '@/utils/useReducedMotion';
@@ -29,7 +29,6 @@ const INDICATOR: Record<ConnectionState, { tone: StatusTone; label: string }> = 
   reconnecting: { tone: 'warning', label: 'Connecting' },
   'device-offline': { tone: 'offline', label: 'Offline' },
   'phone-offline': { tone: 'offline', label: 'Offline' },
-  away: { tone: 'offline', label: 'Offline' },
   'backend-unreachable': { tone: 'offline', label: 'Offline' },
 };
 
@@ -40,11 +39,13 @@ const LINK: Record<ConnectionState, { tone: StatusTone; label: string }> = {
   connecting: { tone: 'warning', label: 'Connecting' },
   reconnecting: { tone: 'warning', label: 'Reconnecting' },
   'phone-offline': { tone: 'danger', label: 'No internet' },
-  away: { tone: 'offline', label: 'Away from home' },
   'backend-unreachable': { tone: 'danger', label: 'Server unreachable' },
 };
 
-/** "MY GREENHOUSE / Greenhouse 01 · ● LIVE", connection pills, "Updated 2 s ago" + refresh. */
+/**
+ * "MY GREENHOUSE / Greenhouse 01 · ● LIVE", connection pills, "Stale data" when the
+ * newest reading is over 2 min old, "Updated 2 s ago" + refresh.
+ */
 export const HomeHeader = memo(function HomeHeader({
   deviceId,
   deviceName,
@@ -76,7 +77,7 @@ export const HomeHeader = memo(function HomeHeader({
             tone={link.tone}
             label={link.label}
             variant="outline"
-            icon={link.tone === 'ok' ? 'wifi' : 'cloud-offline-outline'}
+            icon={link.tone === 'ok' ? 'cloud-done-outline' : 'cloud-offline-outline'}
           />
           {deviceOnline !== undefined ? (
             <StatusPill
@@ -85,6 +86,7 @@ export const HomeHeader = memo(function HomeHeader({
               variant="outline"
             />
           ) : null}
+          <StaleBadge deviceId={deviceId} />
         </View>
         <View style={styles.updated}>
           <UpdatedAgo deviceId={deviceId} prefix="Updated" color="secondary" />

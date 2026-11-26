@@ -80,6 +80,24 @@ export const ThresholdsSchema = z.object({
 });
 export type Thresholds = z.infer<typeof ThresholdsSchema>;
 
+/** Outcome of one SMS attempt (contract §7). */
+export const SmsStatusSchema = z.enum([
+  'sent',
+  'failed',
+  'skipped_cooldown',
+  'skipped_daily_cap',
+  'dry_run',
+]);
+export type SmsStatus = z.infer<typeof SmsStatusSchema>;
+
+/** The newest SMS attempt for an alert. `detail` says why it wasn't sent (null when sent). */
+export const AlertSmsSchema = z.object({
+  status: SmsStatusSchema,
+  at: isoDate,
+  detail: z.string().nullable(),
+});
+export type AlertSms = z.infer<typeof AlertSmsSchema>;
+
 export const AlertSchema = z.object({
   id: z.number().int(),
   deviceId: z.string(),
@@ -92,6 +110,8 @@ export const AlertSchema = z.object({
   limit: z.number().nullish(),
   message: z.string(),
   readAt: isoDate.nullable(),
+  // null = no SMS for this alert (yet); always null in the socket `alert` event.
+  sms: AlertSmsSchema.nullish(),
 });
 export type Alert = z.infer<typeof AlertSchema>;
 
@@ -99,9 +119,13 @@ export const ErrorCodeSchema = z.enum([
   'VALIDATION_ERROR',
   'INVALID_JSON',
   'BAD_REQUEST',
+  'UNAUTHORIZED',
   'NOT_FOUND',
   'DEVICE_OFFLINE',
-  'BROKER_UNAVAILABLE',
+  'SMS_NOT_CONFIGURED',
+  'NOT_SIMULATED',
+  'RATE_LIMITED',
+  'NOT_CONFIGURED',
   'INTERNAL_ERROR',
 ]);
 export type ErrorCode = z.infer<typeof ErrorCodeSchema>;
@@ -118,11 +142,12 @@ export type ApiErrorBody = z.infer<typeof ApiErrorBodySchema>;
 
 // ---------- REST responses (contract §2) ----------
 
+/** GET /api/health (200 when the database works, 503 when it doesn't). */
 export const HealthSchema = z.object({
   status: z.enum(['ok', 'degraded']),
   db: z.enum(['ok', 'error']),
-  mqtt: z.enum(['connected', 'disconnected']),
   uptimeSec: z.number(),
+  devTools: z.boolean(),
   time: isoDate,
 });
 export type Health = z.infer<typeof HealthSchema>;
@@ -200,67 +225,47 @@ export const DevStatusSchema = z.object({
 });
 export type DevStatus = z.infer<typeof DevStatusSchema>;
 
+/** 202: queued as a `simulate` command, applied with the simulator's next reading. */
 export const SimulateResponseSchema = z.object({
   deviceId: z.string(),
   scenario: SimScenarioSchema,
-  status: z.literal('sent'),
+  status: z.literal('queued'),
 });
 export type SimulateResponse = z.infer<typeof SimulateResponseSchema>;
 
-// ---------- SMS alerts (contract §7) ----------
+// ---------- SMS alerts (contract §7, configured in the server environment) ----------
 
-/** International format: "+", then 8–15 digits, the first not 0 (mirrors the backend). */
-export const E164_PATTERN = /^\+[1-9]\d{7,14}$/;
+/** One SMS attempt (newest first in GET /api/sms/status). Numbers are masked. */
+export const SmsAttemptSchema = z.object({
+  id: z.number().int(),
+  at: isoDate,
+  kind: z.enum(['threshold', 'recovery', 'offline', 'online', 'test']),
+  deviceId: z.string().nullable(),
+  alertId: z.number().int().nullable(),
+  sensor: z.string().nullable(),
+  condition: z.string(),
+  value: nullableNumber,
+  threshold: nullableNumber,
+  message: z.string(),
+  recipients: z.array(z.string()),
+  status: SmsStatusSchema,
+  providerResponse: z.string().nullable(),
+});
+export type SmsAttempt = z.infer<typeof SmsAttemptSchema>;
 
-export const SmsSettingsSchema = z.object({
-  enabled: z.boolean(),
-  phone: z.string().nullable(),
-  offlineAfterMin: z.number().int(),
-  /** "console" = test mode (messages only logged on the backend), "semaphore" = real SMS. */
+/** GET /api/sms/status: read-only setup and the 10 newest attempts. */
+export const SmsStatusInfoSchema = z.object({
   provider: z.string(),
-  simulated: z.boolean(),
+  /** true = SMS_DRY_RUN: attempts are logged on the server, nothing is sent. */
+  dryRun: z.boolean(),
+  recipients: z.array(z.string()),
+  cooldownMinutes: z.number().int(),
   dailyCap: z.number().int(),
+  offlineAfterMinutes: z.number().int(),
   sentLast24h: z.number().int(),
-  last: z
-    .object({
-      ts: isoDate,
-      kind: z.enum(['critical', 'offline', 'closing', 'test']),
-      status: z.enum(['sent', 'failed', 'skipped']),
-      error: z.string().nullable(),
-    })
-    .nullable(),
-  updatedAt: isoDate,
+  recent: z.array(SmsAttemptSchema),
 });
-export type SmsSettings = z.infer<typeof SmsSettingsSchema>;
-
-/** PUT /api/sms/settings (full replacement). */
-export const SmsSettingsUpdateSchema = z
-  .object({
-    enabled: z.boolean(),
-    phone: z
-      .string()
-      .regex(E164_PATTERN, 'Enter the number like +63 917 123 4567 or 0917 123 4567')
-      .nullable(),
-    offlineAfterMin: z.number().int().min(5, 'At least 5 minutes').max(120, 'At most 120 minutes'),
-  })
-  .superRefine((v, ctx) => {
-    if (v.enabled && v.phone === null) {
-      ctx.addIssue({
-        code: 'custom',
-        path: ['phone'],
-        message: 'Enter the owner’s number to turn SMS alerts on',
-      });
-    }
-  });
-export type SmsSettingsUpdate = z.infer<typeof SmsSettingsUpdateSchema>;
-
-/** POST /api/sms/test. `simulated` = test mode: only written to the backend log. */
-export const SmsTestResultSchema = z.object({
-  status: z.enum(['sent', 'failed']),
-  error: z.string().nullable(),
-  simulated: z.boolean(),
-});
-export type SmsTestResult = z.infer<typeof SmsTestResultSchema>;
+export type SmsStatusInfo = z.infer<typeof SmsStatusInfoSchema>;
 
 /** PATCH /api/devices/:id: rename the greenhouse (mirrors the backend rules, contract §2). */
 export const DeviceRenameSchema = z.object({
@@ -268,7 +273,10 @@ export const DeviceRenameSchema = z.object({
 });
 export type DeviceRename = z.infer<typeof DeviceRenameSchema>;
 
-/** POST /api/devices/:id/soil-calibration (202: sent, acknowledged by telemetry). */
+/**
+ * POST /api/devices/:id/soil-calibration (202: queued, delivered with the device's
+ * next reading, acknowledged by the new soilDryMv/soilWetMv it reports).
+ */
 export const SoilPointSchema = z.enum(['dry', 'wet']);
 export type SoilPoint = z.infer<typeof SoilPointSchema>;
 export const SoilCalibrationBodySchema = z.object({ point: SoilPointSchema });
@@ -276,7 +284,7 @@ export const SoilCalibrationResponseSchema = z.object({
   commandId: z.string(),
   deviceId: z.string(),
   point: SoilPointSchema,
-  status: z.literal('sent'),
+  status: z.literal('queued'),
 });
 export type SoilCalibrationResponse = z.infer<typeof SoilCalibrationResponseSchema>;
 

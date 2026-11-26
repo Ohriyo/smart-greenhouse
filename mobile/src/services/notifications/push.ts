@@ -3,6 +3,7 @@ import * as Device from 'expo-device';
 import { isRunningInExpoGo } from 'expo';
 import * as Notifications from 'expo-notifications';
 import { AndroidImportance, AndroidNotificationVisibility } from 'expo-notifications';
+import { Platform } from 'react-native';
 import { z } from 'zod';
 
 import { api, describeError } from '@/services/api';
@@ -11,14 +12,29 @@ import { useNotificationStore, type PermissionState } from '@/store/notification
 /** Must match the backend's ALERT_CHANNEL_ID (backend/src/push/sender.ts). */
 export const ALERT_CHANNEL_ID = 'greenhouse-alerts';
 
+/** Closed-app push exists only in the Android app (not in the web build). */
+export const PUSH_PLATFORM = Platform.OS === 'android';
+
 export type PushSupport =
   | { ok: true; projectId: string }
-  | { ok: false; reason: 'expo-go' | 'emulator' | 'no-project-id'; message: string };
+  | {
+      ok: false;
+      reason: 'not-android' | 'expo-go' | 'emulator' | 'no-project-id';
+      message: string;
+    };
 
 const ExtraSchema = z.object({ eas: z.object({ projectId: z.string().min(1) }) });
 
 /** Whether this build can receive remote pushes at all. */
 export function pushSupport(): PushSupport {
+  if (!PUSH_PLATFORM) {
+    return {
+      ok: false,
+      reason: 'not-android',
+      message:
+        'Push notifications are available in the Android app. Here, alerts appear in the Alerts tab.',
+    };
+  }
   if (isRunningInExpoGo()) {
     return {
       ok: false,
@@ -53,6 +69,7 @@ export function pushSupport(): PushSupport {
  * Expo Go too (local notifications).
  */
 export async function ensureAlertChannel(): Promise<void> {
+  if (!PUSH_PLATFORM) return;
   await Notifications.setNotificationChannelAsync(ALERT_CHANNEL_ID, {
     name: 'Greenhouse alerts',
     description: 'Temperature, humidity, soil and light out of range, greenhouse offline',
@@ -70,6 +87,7 @@ export async function ensureAlertChannel(): Promise<void> {
  * push that arrives in the foreground goes to the notification list silently.
  */
 export function configureForegroundPresentation(): void {
+  if (!PUSH_PLATFORM) return;
   Notifications.setNotificationHandler({
     handleNotification: () =>
       Promise.resolve({
@@ -87,6 +105,7 @@ function toPermissionState(p: Notifications.NotificationPermissionsStatus): Perm
 }
 
 export async function refreshPermission(): Promise<PermissionState> {
+  if (!PUSH_PLATFORM) return useNotificationStore.getState().permission;
   const state = toPermissionState(await Notifications.getPermissionsAsync());
   useNotificationStore.getState().setPermission(state);
   return state;
@@ -94,6 +113,7 @@ export async function refreshPermission(): Promise<PermissionState> {
 
 /** Shows Android's POST_NOTIFICATIONS dialog (Android 13+). Call after explaining why. */
 export async function requestPermission(): Promise<PermissionState> {
+  if (!PUSH_PLATFORM) return useNotificationStore.getState().permission;
   await ensureAlertChannel();
   const state = toPermissionState(await Notifications.requestPermissionsAsync());
   useNotificationStore.getState().setPermission(state);

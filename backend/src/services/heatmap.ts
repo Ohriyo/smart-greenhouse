@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { prisma } from '../db.js';
 import { Prisma } from '../generated/prisma/client.js';
 import type { AlertMetric } from '../domain/schemas.js';
+import { TS_EPOCH_MS } from './history.js';
 import { DAY_MS, HOUR_MS, MANILA_OFFSET_MS, manilaDayLabel, manilaFloor } from './manila.js';
 
 export interface HeatmapResult {
@@ -19,7 +20,7 @@ const RowSchema = z.object({ day: num, hour: num, avg: num });
 
 /**
  * Hourly averages for the last `days` Manila calendar days (today included),
- * e.g. "Temperature by hour, last 7 days". Relies on Reading.ts in epoch ms.
+ * e.g. "Temperature by hour, last 7 days".
  */
 export async function getHeatmap(
   deviceId: string,
@@ -32,12 +33,15 @@ export async function getHeatmap(
   // `metric` is whitelisted by AlertMetricSchema, so using it as an identifier is safe.
   const col = Prisma.raw(`"${metric}"`);
 
+  // Manila-local epoch ms; day = whole days since the epoch, hour = 0–23 within it.
+  const local = Prisma.sql`(${TS_EPOCH_MS} + ${MANILA_OFFSET_MS})`;
   const rows = await prisma.$queryRaw<unknown[]>`
-    SELECT CAST(("ts" + ${MANILA_OFFSET_MS}) / ${DAY_MS} AS INTEGER) AS day,
-           CAST((("ts" + ${MANILA_OFFSET_MS}) % ${DAY_MS}) / ${HOUR_MS} AS INTEGER) AS hour,
-           AVG(${col}) AS avg
+    SELECT floor(${local} / ${DAY_MS})::bigint AS day,
+           floor(mod(${local}, ${DAY_MS}) / ${HOUR_MS})::int AS hour,
+           avg(${col})::float8 AS avg
     FROM "Reading"
-    WHERE "deviceId" = ${deviceId} AND "ts" >= ${from} AND "ts" <= ${to} AND ${col} IS NOT NULL
+    WHERE "deviceId" = ${deviceId} AND "ts" >= ${new Date(from)} AND "ts" <= ${new Date(to)}
+      AND ${col} IS NOT NULL
     GROUP BY day, hour`;
 
   const firstDay = Math.floor((from + MANILA_OFFSET_MS) / DAY_MS);

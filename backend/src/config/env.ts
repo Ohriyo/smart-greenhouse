@@ -2,9 +2,8 @@ import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 
-/** Absolute path of the backend/ folder (works from both src/ and dist/). */
-export const BACKEND_ROOT = fileURLToPath(new URL('../../', import.meta.url));
-
+// backend/.env (local development). Variables that are already set (Render's
+// environment, the test runner) win: loadEnvFile never overrides them.
 const envFile = fileURLToPath(new URL('../../.env', import.meta.url));
 if (existsSync(envFile)) process.loadEnvFile(envFile);
 
@@ -15,7 +14,10 @@ const EnvSchema = z
       .string()
       .regex(/^mqtts?:\/\//, 'must start with mqtt:// or mqtts://')
       .default('mqtt://localhost:1883'),
-    DATABASE_URL: z.string().min(1).default('file:./dev.db'),
+    /** PostgreSQL (Neon in production). TLS is enforced for non-local hosts (src/db.ts). */
+    DATABASE_URL: z
+      .string()
+      .regex(/^postgres(ql)?:\/\//, 'must be a postgresql:// connection string (Neon or local)'),
     /** Fallback offline timeout for devices that don't report `intervalSec`. */
     OFFLINE_AFTER_SEC: z.coerce.number().int().min(10).max(86_400).default(90),
     /** Minimum minutes between two breach alerts of the same metric (unless severity rises). */

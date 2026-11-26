@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { thinEvenly } from './recent.js';
+import { thinEvenly } from './thinEvenly.js';
 
 describe('thinEvenly', () => {
   it('returns short lists unchanged (as a copy)', () => {

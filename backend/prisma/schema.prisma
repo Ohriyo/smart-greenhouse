@@ -1,5 +1,6 @@
-// Smart Greenhouse data model (SQLite).
+// Smart Greenhouse data model (PostgreSQL: Neon in production, a local server for tests).
 // String fields documented as enums are validated with Zod in the app layer.
+// All timestamps are `timestamptz` (stored in UTC).
 // NOTE: there is no soil temperature sensor — never add soil temperature fields.
 
 generator client {
@@ -9,23 +10,23 @@ generator client {
 }
 
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
 }
 
 model Device {
-  id        String    @id // from the MQTT topic: greenhouse/{deviceId}/...
+  id        String    @id // "gh-01": deviceId in POST /api/readings (default DEFAULT_DEVICE_ID)
   name      String
   online    Boolean   @default(false)
-  lastSeen  DateTime?
-  createdAt DateTime  @default(now())
-  /// Telemetry interval the device reports (seconds); drives the "3 missed intervals" offline rule.
+  lastSeen  DateTime? @db.Timestamptz(3)
+  createdAt DateTime  @default(now()) @db.Timestamptz(3)
+  /// Reading interval the device reports (seconds); drives the "3 missed intervals" offline rule.
   telemetryIntervalSec Int?
   /// Latest Wi-Fi signal the device reported (dBm).
   rssi       Int?
   /// Seconds since the device booted, as reported at `uptimeAt`
   /// (boot time = uptimeAt − uptimeSec; a drop means it rebooted).
   uptimeSec  Int?
-  uptimeAt   DateTime?
+  uptimeAt   DateTime? @db.Timestamptz(3)
   /// Soil calibration the device reports using (mV in air = 0 %, in water = 100 %).
   soilDryMv  Int?
   soilWetMv  Int?
@@ -38,17 +39,19 @@ model Device {
 model Reading {
   id           Int      @id @default(autoincrement())
   deviceId     String
-  ts           DateTime
+  /// When the reading was taken (the device clock if plausible, else the time it arrived).
+  ts           DateTime @db.Timestamptz(3)
   airTemp      Float? // °C (DHT22)
   humidity     Float? // %RH (DHT22)
   soilMoisture Float? // % after dry/wet calibration
-  soilRaw      Int? // raw ADC 0..4095
+  soilRaw      Int? // sensor output in mV
   lux          Float? // BH1750
   rssi         Int? // dBm
 
   device Device @relation(fields: [deviceId], references: [id], onDelete: Cascade)
 
   @@index([deviceId, ts])
+  @@index([ts]) // retention job and time-range scans
 }
 
 model Thresholds {
@@ -61,7 +64,7 @@ model Thresholds {
   soilMoistureMax Float?   @default(80)
   luxMin          Float?
   luxMax          Float?
-  updatedAt       DateTime @updatedAt
+  updatedAt       DateTime @updatedAt @db.Timestamptz(3)
 
   device Device @relation(fields: [deviceId], references: [id], onDelete: Cascade)
 }
@@ -69,16 +72,16 @@ model Thresholds {
 model Alert {
   id       Int       @id @default(autoincrement())
   deviceId String
-  ts       DateTime
+  ts       DateTime  @db.Timestamptz(3)
   type     String // "above_max" | "below_min" | "recovered" | "offline" | "online"
   severity String // "info" | "warning" | "critical"
   metric   String? // "airTemp" | "humidity" | "soilMoisture" | "lux" (threshold alerts only)
   value    Float?
-  /// The limit that was crossed (breach alerts only; null for recovered/offline/online
-  /// and for alerts created before this column existed). Exposed as `limit` in the API.
+  /// The limit that was crossed (breach alerts only; null for recovered/offline/online).
+  /// Exposed as `limit` in the API.
   limitValue Float?
   message  String
-  readAt   DateTime?
+  readAt   DateTime? @db.Timestamptz(3)
 
   device Device @relation(fields: [deviceId], references: [id], onDelete: Cascade)
 
@@ -91,9 +94,9 @@ model PushToken {
   id        Int      @id @default(autoincrement())
   token     String   @unique // "ExponentPushToken[...]"
   platform  String   @default("android")
-  createdAt DateTime @default(now())
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
   /// Last time the app (re)registered this token.
-  updatedAt DateTime @updatedAt
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
 }
 
 // Single-user app: one row (id = 1) holds the push notification preferences.
@@ -101,7 +104,7 @@ model NotificationSettings {
   id          Int      @id @default(1)
   enabled     Boolean  @default(true)
   minSeverity String   @default("warning") // "info" | "warning" | "critical"
-  updatedAt   DateTime @updatedAt
+  updatedAt   DateTime @updatedAt @db.Timestamptz(3)
 }
 
 // Single-user app: one row (id = 1) holds the owner's SMS alert preferences.
@@ -113,13 +116,13 @@ model SmsSettings {
   phone           String?
   /// Send the "greenhouse offline" SMS after this many minutes without data.
   offlineAfterMin Int      @default(10)
-  updatedAt       DateTime @updatedAt
+  updatedAt       DateTime @updatedAt @db.Timestamptz(3)
 }
 
 /// One row per SMS we tried to send: daily cap, "last SMS" in the app, test throttling.
 model SmsLog {
   id         Int      @id @default(autoincrement())
-  ts         DateTime @default(now())
+  ts         DateTime @default(now()) @db.Timestamptz(3)
   /// "critical" | "offline" | "closing" | "test"
   kind       String
   deviceId   String?
@@ -142,8 +145,8 @@ model SmsEpisode {
   deviceId    String
   /// "airTemp" | "humidity" | "soilMoisture" | "lux" | "offline"
   metric      String
-  openedAt    DateTime  @default(now())
-  closedAt    DateTime?
+  openedAt    DateTime  @default(now()) @db.Timestamptz(3)
+  closedAt    DateTime? @db.Timestamptz(3)
 
   @@index([deviceId, metric, closedAt])
 }

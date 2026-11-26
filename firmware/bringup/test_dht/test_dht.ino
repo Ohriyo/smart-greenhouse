@@ -1,11 +1,15 @@
-// Bring-up test: DHT22 only.   pio run -e test_dht -t upload -t monitor
+// Bring-up test: DHT22 only. Arduino IDE: open this file, Upload, Serial Monitor 115200.
 // Prints temperature + humidity every 2.5 s, or why the read failed.
 // Wiring: DHT22 "+" → 3.3 V, "out" → GPIO27, "−" → GND (bare sensor: 10 kΩ pull-up out→3.3 V).
 
 #include <Arduino.h>
 #include <DHT.h>
 
-#include "config.h"
+// Same values as SmartGreenhouse/config.h (a sketch can't include another sketch's files).
+namespace cfg {
+constexpr uint8_t PIN_DHT = 27;
+constexpr uint32_t DHT_INTERVAL_MS = 2500;
+}  // namespace cfg
 
 DHT dht(cfg::PIN_DHT, DHT22);
 uint32_t nextRead = 2000;  // the sensor needs ~2 s after power-up

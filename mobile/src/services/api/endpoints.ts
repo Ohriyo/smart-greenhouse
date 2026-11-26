@@ -17,8 +17,6 @@ import {
   type PushToken,
   type ReadAllResponse,
   DeviceListSchema,
-  FanCommandResponseSchema,
-  FanCommandSchema,
   HealthSchema,
   HistorySchema,
   SimulateResponseSchema,
@@ -30,7 +28,6 @@ import {
   DevStatusSchema,
   DeviceRenameSchema,
   DeviceSchema,
-  FanActivitySchema,
   HeatmapSchema,
   LatestSchema,
   RecentSchema,
@@ -38,8 +35,6 @@ import {
   ThresholdsUpdateResponseSchema,
   ThresholdsUpdateSchema,
   type Device,
-  type FanCommand,
-  type FanCommandResponse,
   type ThresholdsUpdate,
   type ThresholdsUpdateResponse,
   type DevStatus,
@@ -55,7 +50,6 @@ import {
   type HistoryMetric,
   type HistoryRange,
   type AlertMetric,
-  type FanActivity,
   type Heatmap,
   type Latest,
   type Recent,
@@ -90,17 +84,6 @@ export const api = {
       { signal },
     ),
 
-  fanActivity: (
-    deviceId: string,
-    range: HistoryRange,
-    signal?: AbortSignal,
-  ): Promise<FanActivity> =>
-    apiRequest(
-      `/api/devices/${encodeURIComponent(deviceId)}/fan-activity?range=${range}`,
-      FanActivitySchema,
-      { signal, timeoutMs: 15_000 },
-    ),
-
   heatmap: (
     deviceId: string,
     metric: AlertMetric,
@@ -128,13 +111,6 @@ export const api = {
   thresholds: (deviceId: string, signal?: AbortSignal): Promise<Thresholds> =>
     apiRequest(`/api/devices/${encodeURIComponent(deviceId)}/thresholds`, ThresholdsSchema, {
       signal,
-    }),
-
-  /** 202 = sent to the device, not yet confirmed (confirmation arrives in telemetry). */
-  setFanMode: (deviceId: string, body: FanCommand): Promise<FanCommandResponse> =>
-    apiRequest(`/api/devices/${encodeURIComponent(deviceId)}/fan`, FanCommandResponseSchema, {
-      method: 'POST',
-      body: FanCommandSchema.parse(body),
     }),
 
   /**

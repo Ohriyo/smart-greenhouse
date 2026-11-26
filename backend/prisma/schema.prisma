@@ -20,11 +20,6 @@ model Device {
   createdAt DateTime  @default(now())
   /// Telemetry interval the device reports (seconds); drives the "3 missed intervals" offline rule.
   telemetryIntervalSec Int?
-  /// Fan thresholds the device reports it is actually using (from telemetry).
-  /// Compared with Thresholds to show whether the device applied a change.
-  reportedFanOnTemp       Float?
-  reportedFanOffTemp      Float?
-  reportedFanThresholdsAt DateTime?
   /// Latest Wi-Fi signal the device reported (dBm).
   rssi       Int?
   /// Seconds since the device booted, as reported at `uptimeAt`
@@ -38,7 +33,6 @@ model Device {
   readings   Reading[]
   thresholds Thresholds?
   alerts     Alert[]
-  fanEvents  FanEvent[]
 }
 
 model Reading {
@@ -50,8 +44,6 @@ model Reading {
   soilMoisture Float? // % after dry/wet calibration
   soilRaw      Int? // raw ADC 0..4095
   lux          Float? // BH1750
-  fanOn        Boolean
-  fanMode      String // "auto" | "on" | "off"
   rssi         Int? // dBm
 
   device Device @relation(fields: [deviceId], references: [id], onDelete: Cascade)
@@ -61,8 +53,6 @@ model Reading {
 
 model Thresholds {
   deviceId        String   @id
-  fanOnTemp       Float    @default(32)
-  fanOffTemp      Float    @default(28)
   airTempMin      Float?   @default(15)
   airTempMax      Float?   @default(35)
   humidityMin     Float?   @default(40)
@@ -94,20 +84,6 @@ model Alert {
 
   @@index([deviceId, ts])
   @@index([deviceId, metric])
-}
-
-// A confirmed change of fan state, detected from telemetry.
-model FanEvent {
-  id       Int      @id @default(autoincrement())
-  deviceId String
-  ts       DateTime
-  fanOn    Boolean
-  fanMode  String // "auto" | "on" | "off"
-  airTemp  Float? // air temperature at the moment of the change
-
-  device Device @relation(fields: [deviceId], references: [id], onDelete: Cascade)
-
-  @@index([deviceId, ts])
 }
 
 // Expo push token of a phone that wants closed-app alerts (expo-notifications).
@@ -167,8 +143,6 @@ model SmsEpisode {
   /// "airTemp" | "humidity" | "soilMoisture" | "lux" | "offline"
   metric      String
   openedAt    DateTime  @default(now())
-  /// Air temperature is back in range but the fan still runs: waiting for it to switch off.
-  recoveredAt DateTime?
   closedAt    DateTime?
 
   @@index([deviceId, metric, closedAt])

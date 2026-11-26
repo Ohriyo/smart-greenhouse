@@ -12,9 +12,6 @@ const nullableNumber = z.number().nullable();
 
 // ---------- Enums ----------
 
-export const FanModeSchema = z.enum(['auto', 'on', 'off']);
-export type FanMode = z.infer<typeof FanModeSchema>;
-
 export const HistoryMetricSchema = z.enum([
   'airTemp',
   'humidity',
@@ -46,10 +43,6 @@ export const DeviceSchema = z.object({
   lastSeen: isoDate.nullable(),
   createdAt: isoDate,
   telemetryIntervalSec: z.number().int().nullable(),
-  // Fan thresholds the device reports using (acknowledgement). nullish = older backend.
-  reportedFanOnTemp: z.number().nullish(),
-  reportedFanOffTemp: z.number().nullish(),
-  reportedFanThresholdsAt: isoDate.nullish(),
   // Diagnostics reported in telemetry (contract §1 Device). nullish = older backend.
   rssi: z.number().int().nullish(),
   uptimeSec: z.number().int().nullish(),
@@ -69,16 +62,12 @@ export const ReadingSchema = z.object({
   soilMoisture: nullableNumber,
   soilRaw: z.number().int().nullable(),
   lux: nullableNumber,
-  fanOn: z.boolean(),
-  fanMode: FanModeSchema,
   rssi: z.number().int().nullable(),
 });
 export type Reading = z.infer<typeof ReadingSchema>;
 
 export const ThresholdsSchema = z.object({
   deviceId: z.string(),
-  fanOnTemp: z.number(),
-  fanOffTemp: z.number(),
   airTempMin: nullableNumber,
   airTempMax: nullableNumber,
   humidityMin: nullableNumber,
@@ -90,15 +79,6 @@ export const ThresholdsSchema = z.object({
   updatedAt: isoDate,
 });
 export type Thresholds = z.infer<typeof ThresholdsSchema>;
-
-export const FanStateSchema = z.object({
-  deviceId: z.string(),
-  ts: isoDate,
-  fanOn: z.boolean(),
-  fanMode: FanModeSchema,
-  airTemp: nullableNumber,
-});
-export type FanState = z.infer<typeof FanStateSchema>;
 
 export const AlertSchema = z.object({
   id: z.number().int(),
@@ -152,8 +132,6 @@ export const DeviceListSchema = z.array(DeviceSchema);
 export const LatestSchema = z.object({
   device: DeviceSchema,
   reading: ReadingSchema.nullable(),
-  /** Most recent confirmed fan change ("running since …"). */
-  lastFanChange: FanStateSchema.nullish(),
 });
 export type Latest = z.infer<typeof LatestSchema>;
 
@@ -166,18 +144,6 @@ export const RecentSchema = z.object({
   readings: z.array(ReadingSchema),
 });
 export type Recent = z.infer<typeof RecentSchema>;
-
-/** GET /api/devices/:id/fan-activity: seconds on per Manila-aligned bucket. */
-export const FanActivitySchema = z.object({
-  deviceId: z.string(),
-  range: HistoryRangeSchema,
-  from: isoDate,
-  to: isoDate,
-  bucketSec: z.number().int().positive(),
-  totalOnSec: z.number().int().nonnegative(),
-  buckets: z.array(z.object({ ts: isoDate, onSec: z.number().int().nonnegative() })),
-});
-export type FanActivity = z.infer<typeof FanActivitySchema>;
 
 /** GET /api/devices/:id/heatmap: hourly averages per Manila day, oldest first. */
 export const HeatmapSchema = z.object({
@@ -218,17 +184,8 @@ export type History = z.infer<typeof HistorySchema>;
 
 export const ThresholdsUpdateResponseSchema = z.object({
   thresholds: ThresholdsSchema,
-  deviceSync: z.enum(['sent', 'pending']),
 });
 export type ThresholdsUpdateResponse = z.infer<typeof ThresholdsUpdateResponseSchema>;
-
-export const FanCommandResponseSchema = z.object({
-  commandId: z.string(),
-  deviceId: z.string(),
-  mode: FanModeSchema,
-  status: z.literal('sent'),
-});
-export type FanCommandResponse = z.infer<typeof FanCommandResponseSchema>;
 
 // ---------- Dev-only Demo tools (contract §2 "Dev-only endpoints") ----------
 
@@ -371,10 +328,6 @@ export const PushDataSchema = z.object({
 
 // ---------- REST request bodies (validated before sending) ----------
 
-const fanTemp = z
-  .number({ error: 'Enter a number' })
-  .min(10, 'Must be 10–50 °C')
-  .max(50, 'Must be 10–50 °C');
 const limit = (min: number, max: number, unit: string) =>
   z
     .number({ error: 'Enter a number' })
@@ -392,8 +345,6 @@ const THRESHOLD_PAIRS = [
 /** PUT /api/devices/:id/thresholds: full replacement, null = no limit. */
 export const ThresholdsUpdateSchema = z
   .object({
-    fanOnTemp: fanTemp,
-    fanOffTemp: fanTemp,
     airTempMin: limit(-40, 80, '°C'),
     airTempMax: limit(-40, 80, '°C'),
     humidityMin: limit(0, 100, '%'),
@@ -405,13 +356,6 @@ export const ThresholdsUpdateSchema = z
   })
   .superRefine((t, ctx) => {
     // Same rules as the backend (contract §1 Thresholds).
-    if (t.fanOnTemp - t.fanOffTemp < 1) {
-      ctx.addIssue({
-        code: 'custom',
-        path: ['fanOffTemp'],
-        message: 'Must be at least 1 °C below the ON temperature',
-      });
-    }
     for (const [minKey, maxKey] of THRESHOLD_PAIRS) {
       const min = t[minKey];
       const max = t[maxKey];
@@ -425,9 +369,6 @@ export const ThresholdsUpdateSchema = z
     }
   });
 export type ThresholdsUpdate = z.infer<typeof ThresholdsUpdateSchema>;
-
-export const FanCommandSchema = z.object({ mode: FanModeSchema });
-export type FanCommand = z.infer<typeof FanCommandSchema>;
 
 export const NotificationSettingsUpdateSchema = z.object({
   enabled: z.boolean(),
@@ -447,7 +388,6 @@ export interface AlertsFilter {
 export const SocketEventSchemas = {
   telemetry: ReadingSchema,
   'device:status': DeviceSchema,
-  'fan:state': FanStateSchema,
   alert: AlertSchema,
 } as const;
 export type SocketEventName = keyof typeof SocketEventSchemas;

@@ -4,17 +4,15 @@ import { RefreshControl, StyleSheet, View } from 'react-native';
 
 import { Card, EmptyState, ErrorState, Screen, Skeleton } from '@/components/ui';
 import { CalibrationCard } from '@/features/control/CalibrationCard';
-import { ControlFanHero } from '@/features/control/ControlFanHero';
 import { ThresholdsSection } from '@/features/control/ThresholdsSection';
 import { LiveBanner } from '@/features/dashboard/LiveBanner';
 import { useDevicesQuery, useLatestQuery, useThresholdsQuery } from '@/features/dashboard/queries';
-import { useIsLive } from '@/features/dashboard/useLiveness';
 import { describeError, errorTitle } from '@/services/api';
 import { useLiveStore } from '@/store/liveStore';
 import { useSettingsStore } from '@/store/settingsStore';
 import { useTheme } from '@/theme';
 
-/** Control: fan hero (Auto/On/Off), fan thresholds, sensor limits, soil calibration. */
+/** Control: sensor alert limits and soil calibration. */
 export default function ControlScreen() {
   const theme = useTheme();
   const apiUrl = useSettingsStore((s) => s.apiUrl);
@@ -24,18 +22,6 @@ export default function ControlScreen() {
   const deviceId = useLiveStore((s) => s.deviceIds[0]);
   const latestQuery = useLatestQuery(deviceId);
   const thresholdsQuery = useThresholdsQuery(deviceId);
-
-  // Primitive selectors: the screen re-renders only when these values change.
-  const reportedOn = useLiveStore(
-    (s) => (deviceId ? s.devices[deviceId]?.reportedFanOnTemp : null) ?? null,
-  );
-  const reportedOff = useLiveStore(
-    (s) => (deviceId ? s.devices[deviceId]?.reportedFanOffTemp : null) ?? null,
-  );
-  const reportedAt = useLiveStore(
-    (s) => (deviceId ? s.devices[deviceId]?.reportedFanThresholdsAt : null) ?? null,
-  );
-  const live = useIsLive(deviceId);
 
   const [refreshing, setRefreshing] = useState(false);
   const { refetch: refetchDevices } = devicesQuery;
@@ -74,7 +60,7 @@ export default function ControlScreen() {
       return (
         <Screen
           title="Control"
-          subtitle="Fan and greenhouse thresholds"
+          subtitle="Alert limits and soil calibration"
           refreshControl={refreshControl}
         >
           <ErrorState
@@ -90,7 +76,7 @@ export default function ControlScreen() {
       return (
         <Screen
           title="Control"
-          subtitle="Fan and greenhouse thresholds"
+          subtitle="Alert limits and soil calibration"
           refreshControl={refreshControl}
         >
           <EmptyState
@@ -103,7 +89,7 @@ export default function ControlScreen() {
       );
     }
     return (
-      <Screen title="Control" subtitle="Fan and greenhouse thresholds">
+      <Screen title="Control" subtitle="Alert limits and soil calibration">
         <LoadingCards />
       </Screen>
     );
@@ -112,23 +98,14 @@ export default function ControlScreen() {
   return (
     <Screen
       title="Control"
-      subtitle="Fan and greenhouse thresholds"
+      subtitle="Alert limits and soil calibration"
       banner={
         <LiveBanner deviceId={deviceId} restFailed={devicesQuery.isError || latestQuery.isError} />
       }
       refreshControl={refreshControl}
     >
-      <ControlFanHero deviceId={deviceId} />
-
       {thresholdsQuery.data ? (
-        <ThresholdsSection
-          deviceId={deviceId}
-          saved={thresholdsQuery.data}
-          online={live}
-          reportedOn={reportedOn}
-          reportedOff={reportedOff}
-          reportedAt={reportedAt}
-        />
+        <ThresholdsSection deviceId={deviceId} saved={thresholdsQuery.data} />
       ) : thresholdsQuery.isError ? (
         <Card>
           <ErrorState
@@ -151,9 +128,8 @@ function LoadingCards() {
   const theme = useTheme();
   return (
     <View accessible accessibilityLabel="Loading" style={styles.loading}>
-      <Skeleton height={300} radius={theme.radii.xl} />
-      <Skeleton height={220} radius={theme.radii.lg} />
       <Skeleton height={320} radius={theme.radii.lg} />
+      <Skeleton height={220} radius={theme.radii.lg} />
     </View>
   );
 }

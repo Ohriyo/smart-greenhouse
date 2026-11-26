@@ -2,7 +2,6 @@
 
 #include <WiFi.h>
 
-#include "fan.h"
 #include "log.h"
 #include "network.h"
 #include "sensors.h"
@@ -22,12 +21,9 @@ void help() {
       "\nCommands:\n"
       "  status                   settings, connection, sensor values\n"
       "  watch                    toggle raw sensor print every 1 s\n"
-      "  fan auto|on|off          fan mode (same as the app)\n"
-      "  thr <on> <off>           fan thresholds in °C, e.g. thr 32 28\n"
       "  cal dry                  soil sensor in AIR now: save as 0 %\n"
       "  cal wet                  soil sensor in WATER now: save as 100 %\n"
       "  cal <dryMv> <wetMv>      set calibration numbers directly\n"
-      "  active-low 1|0           fan output: 1 = relay (active-LOW), 0 = MOSFET\n"
       "  mqtt <host> [port]       broker address (the laptop's LAN IP)\n"
       "  id <deviceId>            device id (topics greenhouse/<id>/...)\n"
       "  portal                   open the Wi-Fi setup portal (same as holding BOOT 3 s)\n"
@@ -39,8 +35,6 @@ void status() {
   settings::print();
   LOGF("status", "network: %s, Wi-Fi \"%s\" IP %s RSSI %d", net::stateName(net::state()),
        WiFi.SSID().c_str(), WiFi.localIP().toString().c_str(), WiFi.RSSI());
-  LOGF("status", "fan: %s, mode %s%s", fan::isOn() ? "ON" : "OFF", fanModeName(fan::mode()),
-       fan::failSafe() ? " (FAIL-SAFE: no valid air temperature)" : "");
   sensors::printRaw();
   Snapshot s = shared::snapshot();
   if (s.soilPctOk) LOGF("status", "soil moisture: %.1f %%", s.soilPct);
@@ -65,15 +59,6 @@ void run(char* cmd) {
   else if (!strcmp(c0, "watch")) {
     watch = !watch;
     LOGF("console", "watch %s", watch ? "on" : "off");
-  } else if (!strcmp(c0, "fan") && argc == 2 && parseFanMode(argv[1], c.mode)) {
-    c.type = CmdType::SetFanMode;
-    post(c);
-  } else if (!strcmp(c0, "thr") && argc == 3) {
-    c.type = CmdType::SetFanThresholds;
-    c.fanOnTemp = atof(argv[1]);
-    c.fanOffTemp = atof(argv[2]);
-    if (settings::isValidFanThresholds(c.fanOnTemp, c.fanOffTemp)) post(c);
-    else LOGF("console", "invalid: 10–50 °C and on − off >= 1");
   } else if (!strcmp(c0, "cal") && argc == 2 && !strcmp(argv[1], "dry")) {
     c.type = CmdType::CalibrateSoilDry;
     post(c);
@@ -82,10 +67,6 @@ void run(char* cmd) {
     post(c);
   } else if (!strcmp(c0, "cal") && argc == 3) {
     if (!settings::setSoilCalibration(atoi(argv[1]), atoi(argv[2]))) LOGF("console", "invalid mV values");
-  } else if (!strcmp(c0, "active-low") && argc == 2) {
-    c.type = CmdType::SetFanActiveLow;
-    c.activeLow = strcmp(argv[1], "0") != 0;
-    post(c);
   } else if (!strcmp(c0, "mqtt") && argc >= 2) {
     Settings s = settings::get();
     uint16_t port = argc >= 3 ? static_cast<uint16_t>(atoi(argv[2])) : s.mqttPort;

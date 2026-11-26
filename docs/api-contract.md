@@ -2,7 +2,7 @@
 
 **Single source of truth** for every payload between the ESP32, the backend and the app. Update it whenever the API changes. The mobile Zod schemas mirror this file.
 
-- Contract version: **phase 10** (firmware: telemetry `errors`/`soilDryMv`/`soilWetMv`, `soilRaw` in mV, the `calibrateSoil` command and `POST /api/devices/:id/soil-calibration`). Phase 9 added the retained-status, stale-command and retention rules; phase 8 added push (§6).
+- Contract version: **phase 11** (monitoring only: sensors, alerts and soil calibration). Phase 10 added (firmware: telemetry `errors`/`soilDryMv`/`soilWetMv`, `soilRaw` in mV, the `calibrateSoil` command and `POST /api/devices/:id/soil-calibration`). Phase 9 added the retained-status, stale-command and retention rules; phase 8 added push (§6).
 - Base URL: `http://<laptop-LAN-IP>:4000` (port from `PORT` in `backend/.env`)
 - All timestamps in REST and Socket.IO are **ISO-8601 UTC strings** (`"2026-11-09T10:15:00.000Z"`).
 - Units: `airTemp` °C · `humidity` %RH · `soilMoisture` % (0 = dry calibration, 100 = wet) · `soilRaw` sensor output in mV (0–4095 accepted) · `lux` lx · `rssi` dBm.
@@ -12,10 +12,6 @@
 ---
 
 ## 1. Data types
-
-### FanMode
-
-`"auto" | "on" | "off"`. In `auto` the ESP32 runs its local hysteresis (`fanOnTemp`/`fanOffTemp`). `on`/`off` force the fan.
 
 ### Device
 
@@ -27,9 +23,6 @@
   "lastSeen": "2026-11-09T10:15:00.000Z",
   "createdAt": "2026-11-09T09:00:00.000Z",
   "telemetryIntervalSec": 5,
-  "reportedFanOnTemp": 32,
-  "reportedFanOffTemp": 28,
-  "reportedFanThresholdsAt": "2026-11-09T09:00:05.000Z",
   "rssi": -61,
   "uptimeSec": 3605,
   "uptimeAt": "2026-11-09T10:15:00.000Z",
@@ -46,13 +39,9 @@
 | lastSeen | string \| null | Time the backend last received a live message |
 | createdAt | string | Auto-created on the first MQTT message |
 | telemetryIntervalSec | number \| null | Interval the device reports in telemetry (`intervalSec`); null if never reported |
-| reportedFanOnTemp / reportedFanOffTemp | number \| null | Fan thresholds the device last reported **using** (telemetry `fanOnTemp`/`fanOffTemp`); null if it never reported them |
-| reportedFanThresholdsAt | string \| null | When those reported values last changed |
 | rssi | number \| null | Latest Wi-Fi signal (dBm) from telemetry; null if not reported |
 | uptimeSec / uptimeAt | number \| null / string \| null | Device uptime (s) as reported at `uptimeAt`. Current uptime ≈ `uptimeSec + (now − uptimeAt)` while online; a smaller value than before means it rebooted |
 | soilDryMv / soilWetMv | number \| null | Soil calibration the device reports using (telemetry); null if never reported. A change emits `device:status` (acknowledges `calibrateSoil`) |
-
-**Threshold acknowledgement:** the device has applied the saved fan thresholds when `reportedFanOnTemp === Thresholds.fanOnTemp` and `reportedFanOffTemp === Thresholds.fanOffTemp`. Until then the change is pending: it is sent immediately if the device is online, otherwise on its next reconnect (§4).
 
 ### Reading
 
@@ -66,21 +55,17 @@
   "soilMoisture": 43,
   "soilRaw": 2310,
   "lux": 812.5,
-  "fanOn": false,
-  "fanMode": "auto",
   "rssi": -61
 }
 ```
 
-`airTemp`, `humidity`, `soilMoisture`, `soilRaw`, `lux` and `rssi` are `number | null`. `fanOn` and `fanMode` are always present and are the **confirmed** fan state reported by the device.
+`airTemp`, `humidity`, `soilMoisture`, `soilRaw`, `lux` and `rssi` are `number | null`.
 
 ### Thresholds
 
 ```json
 {
   "deviceId": "gh-01",
-  "fanOnTemp": 32,
-  "fanOffTemp": 28,
   "airTempMin": 15,
   "airTempMax": 35,
   "humidityMin": 40,
@@ -95,14 +80,12 @@
 
 | Field | Default | Rule |
 |---|---|---|
-| fanOnTemp | 32 | 10–50 °C |
-| fanOffTemp | 28 | 10–50 °C and `fanOnTemp − fanOffTemp ≥ 1` |
 | airTempMin / airTempMax | 15 / 35 | −40–80 °C, nullable |
 | humidityMin / humidityMax | 40 / 85 | 0–100 %, nullable |
 | soilMoistureMin / soilMoistureMax | 30 / 80 | 0–100 %, nullable |
 | luxMin / luxMax | null / null | 0–200000 lx, nullable |
 
-When both values of a min/max pair are set, min must be lower than max. `null` means "no limit". The min/max limits feed the alert rules (§5), and `fanOnTemp`/`fanOffTemp` are sent to the ESP32.
+When both values of a min/max pair are set, min must be lower than max. `null` means "no limit". The limits feed the alert rules (§5); they live on the backend only and are never sent to the ESP32.
 
 ### Alert
 
@@ -133,20 +116,6 @@ When both values of a min/max pair are set, min must be lower than max. `null` m
 | message | string | Ready-to-display English text (numbers rounded to 1 decimal, trailing `.0` dropped) |
 | readAt | string \| null | null = unread |
 
-### FanState
-
-```json
-{
-  "deviceId": "gh-01",
-  "ts": "2026-11-09T10:15:00.000Z",
-  "fanOn": true,
-  "fanMode": "auto",
-  "airTemp": 32.1
-}
-```
-
-A **confirmed** change of `fanOn` or `fanMode`, detected from telemetry. `airTemp` is the temperature at that moment (nullable).
-
 ### Error
 
 Every non-2xx response has this shape:
@@ -156,7 +125,7 @@ Every non-2xx response has this shape:
   "error": {
     "code": "VALIDATION_ERROR",
     "message": "Invalid request",
-    "details": [{ "path": "fanOffTemp", "message": "fanOffTemp must be at least 1 °C below fanOnTemp" }]
+    "details": [{ "path": "airTempMin", "message": "airTempMin must be lower than airTempMax" }]
   }
 }
 ```
@@ -204,7 +173,7 @@ Request bodies are JSON (`Content-Type: application/json`, max 16 kB). Unknown b
 200 → `Device[]`, sorted by `id`.
 
 ```json
-[{ "id": "gh-01", "name": "gh-01", "online": true, "lastSeen": "2026-11-09T10:15:00.000Z", "createdAt": "2026-11-09T09:00:00.000Z", "telemetryIntervalSec": 5, "reportedFanOnTemp": 32, "reportedFanOffTemp": 28, "reportedFanThresholdsAt": "2026-11-09T09:00:05.000Z" }]
+[{ "id": "gh-01", "name": "gh-01", "online": true, "lastSeen": "2026-11-09T10:15:00.000Z", "createdAt": "2026-11-09T09:00:00.000Z", "telemetryIntervalSec": 5 }]
 ```
 
 ### PATCH /api/devices/:id
@@ -219,13 +188,12 @@ The name is trimmed and must be 1–40 characters without control characters (ne
 
 ### GET /api/devices/:id/latest
 
-200 → the device, its newest reading (`null` if none yet) and its most recent confirmed fan change (`lastFanChange`, a `FanState`, or `null`). 404 if the device is unknown.
+200 → the device and its newest reading (`null` if none yet). 404 if the device is unknown.
 
 ```json
 {
-  "device": { "id": "gh-01", "name": "gh-01", "online": true, "lastSeen": "2026-11-09T10:15:00.000Z", "createdAt": "2026-11-09T09:00:00.000Z", "telemetryIntervalSec": 5, "reportedFanOnTemp": 32, "reportedFanOffTemp": 28, "reportedFanThresholdsAt": "2026-11-09T09:00:05.000Z" },
-  "reading": { "id": 1234, "deviceId": "gh-01", "ts": "2026-11-09T10:15:00.000Z", "airTemp": 27.4, "humidity": 61.2, "soilMoisture": 43, "soilRaw": 2310, "lux": 812.5, "fanOn": false, "fanMode": "auto", "rssi": -61 },
-  "lastFanChange": { "deviceId": "gh-01", "ts": "2026-11-09T09:42:10.000Z", "fanOn": false, "fanMode": "auto", "airTemp": 27.9 }
+  "device": { "id": "gh-01", "name": "gh-01", "online": true, "lastSeen": "2026-11-09T10:15:00.000Z", "createdAt": "2026-11-09T09:00:00.000Z", "telemetryIntervalSec": 5 },
+  "reading": { "id": 1234, "deviceId": "gh-01", "ts": "2026-11-09T10:15:00.000Z", "airTemp": 27.4, "humidity": 61.2, "soilMoisture": 43, "soilRaw": 2310, "lux": 812.5, "rssi": -61 }
 }
 ```
 
@@ -264,43 +232,6 @@ Each point gives `avg`, `min` and `max` (rounded to 2 decimals) and `count` (raw
 ```
 
 400 `VALIDATION_ERROR` for a missing or invalid `metric`/`range`. 404 for an unknown device.
-
-### GET /api/devices/:id/fan-activity?range=
-
-How long the fan ran, per bucket (History "Fan activity" and "Fan was on").
-
-| Query | Required | Values |
-|---|---|---|
-| range | no (default `24h`) | `24h` · `7d` · `30d` |
-
-Buckets are aligned to **Asia/Manila** time and always all present (zeros included), oldest first; the last one contains "now":
-
-| range | buckets | bucketSec |
-|---|---|---|
-| 24h | 24 × 1 hour | 3600 |
-| 7d | 28 × 6 hours (00/06/12/18 h) | 21600 |
-| 30d | 30 × 1 day (Manila midnight) | 86400 |
-
-Time-weighted from readings: a reading with `fanOn: true` counts until the next reading, but at most `3 × telemetryIntervalSec + 2 s`, so time while the device was offline never counts as running. A bucket never exceeds its length (or the elapsed part of the current bucket).
-
-200:
-
-```json
-{
-  "deviceId": "gh-01",
-  "range": "24h",
-  "from": "2026-11-08T14:00:00.000Z",
-  "to": "2026-11-09T13:20:00.000Z",
-  "bucketSec": 3600,
-  "totalOnSec": 8280,
-  "buckets": [
-    { "ts": "2026-11-08T14:00:00.000Z", "onSec": 0 },
-    { "ts": "2026-11-08T15:00:00.000Z", "onSec": 1260 }
-  ]
-}
-```
-
-400 `VALIDATION_ERROR` for an invalid `range`. 404 for an unknown device.
 
 ### GET /api/devices/:id/heatmap?metric=&days=
 
@@ -349,7 +280,7 @@ The window is `[now − minutes, now]`. At most **360** readings are returned; l
   "from": "2026-11-09T09:45:00.000Z",
   "to": "2026-11-09T10:15:00.000Z",
   "readings": [
-    { "id": 1200, "deviceId": "gh-01", "ts": "2026-11-09T09:45:02.000Z", "airTemp": 27.1, "humidity": 62.0, "soilMoisture": 43, "soilRaw": 2312, "lux": 790.0, "fanOn": false, "fanMode": "auto", "rssi": -61 }
+    { "id": 1200, "deviceId": "gh-01", "ts": "2026-11-09T09:45:02.000Z", "airTemp": 27.1, "humidity": 62.0, "soilMoisture": 43, "soilRaw": 2312, "lux": 790.0, "rssi": -61 }
   ]
 }
 ```
@@ -366,8 +297,6 @@ Full replacement: send **every** field (use `null` for "no limit").
 
 ```json
 {
-  "fanOnTemp": 31,
-  "fanOffTemp": 27.5,
   "airTempMin": 12,
   "airTempMax": 36,
   "humidityMin": 40,
@@ -383,35 +312,13 @@ Full replacement: send **every** field (use `null` for "no limit").
 
 ```json
 {
-  "thresholds": { "deviceId": "gh-01", "fanOnTemp": 31, "fanOffTemp": 27.5, "airTempMin": 12, "airTempMax": 36, "humidityMin": 40, "humidityMax": 85, "soilMoistureMin": 30, "soilMoistureMax": 80, "luxMin": null, "luxMax": null, "updatedAt": "2026-11-09T10:16:00.000Z" },
-  "deviceSync": "sent"
+  "thresholds": { "deviceId": "gh-01", "airTempMin": 12, "airTempMax": 36, "humidityMin": 40, "humidityMax": 85, "soilMoistureMin": 30, "soilMoistureMax": 80, "luxMin": null, "luxMax": null, "updatedAt": "2026-11-09T10:16:00.000Z" }
 }
 ```
 
-`deviceSync` reports whether `fanOnTemp`/`fanOffTemp` reached the ESP32:
-
-- `"sent"`: a `setFanThresholds` command was published to the device.
-- `"pending"`: the device (or broker) is offline. The thresholds are saved and sent automatically the next time the device comes online.
+The thresholds are only used by the backend's alert rules; nothing is sent to the device.
 
 400 `VALIDATION_ERROR` (see the rules in §1). 404 for an unknown device.
-
-### POST /api/devices/:id/fan
-
-```json
-{ "mode": "on" }
-```
-
-`mode` is `"auto" | "on" | "off"`.
-
-202 Accepted: the command was **sent, not yet confirmed**.
-
-```json
-{ "commandId": "6f1c2a9e-3b0d-4a51-9a39-2f3e7c1d8b44", "deviceId": "gh-01", "mode": "on", "status": "sent" }
-```
-
-The app must **not** show the new mode from this response. The confirmed state arrives as a `fan:state` event (and in the next `telemetry`) once the ESP32 has applied it, usually within a second or two. If nothing arrives within ~10 s, the app should show "not confirmed".
-
-Errors: 400 `VALIDATION_ERROR`, 404 `NOT_FOUND`, 409 `DEVICE_OFFLINE` (nothing is sent), 503 `BROKER_UNAVAILABLE`.
 
 ### POST /api/devices/:id/soil-calibration
 
@@ -520,7 +427,7 @@ Setup check: sends a test push to every registered phone, ignoring the preferenc
 ```
 
 - No body: the title is "ETanim" and the text "Test notification: push alerts work on this phone."
-- `{ "preset": "demo" }`: the prototype's sample alert, title "Greenhouse alert" and body "Air temperature 33.1 °C — fan turned on". It looks exactly like a real alert push and opens the Alerts tab when tapped (used by the app's dev-only Demo sheet).
+- `{ "preset": "demo" }`: the prototype's sample alert, title "Greenhouse alert" and body "Air temperature 36.4 °C — above the 35 °C limit". It looks exactly like a real alert push and opens the Alerts tab when tapped (used by the app's dev-only Demo sheet).
 - Any other `preset`, or unknown fields: 400 `VALIDATION_ERROR`.
 
 200:
@@ -545,9 +452,9 @@ For the app's "Presentation tools" (demos). They exist **only** when the backend
 
 | scenario | Effect on the simulator |
 |---|---|
-| `heatwave` | Air temperature jumps to ≥ 33.1 °C and keeps rising toward 41 °C (fan ON, warning, critical within ~30 s) |
+| `heatwave` | Air temperature jumps to ≥ 33.1 °C and keeps rising toward 40 °C (warning, then critical within ~1 min) |
 | `drysoil` | Soil moisture drops to 27 % and keeps drying (below the default 30 % limit) |
-| `normal` | Clears both scenarios: air temperature ≤ 27 °C (fan switches off), soil ≥ 60 % |
+| `normal` | Clears both scenarios: air temperature ≤ 27 °C, soil ≥ 60 % |
 
 202 `{ "deviceId", "scenario", "status": "sent" }`. 409 `NOT_SIMULATED` if `deviceId` is not a running simulator (including real hardware: it is never touched), 400 `VALIDATION_ERROR`, 503 `BROKER_UNAVAILABLE`.
 ---
@@ -559,14 +466,13 @@ Connect to the same base URL (`http://<laptop-LAN-IP>:4000`), default path `/soc
 | Event | Payload | When |
 |---|---|---|
 | `telemetry` | `Reading` | Every stored reading |
-| `device:status` | `Device` | A device goes online or offline, is auto-created, is renamed, or reports different fan thresholds or soil calibration (acknowledgement). RSSI/uptime updates alone don't emit it (they arrive with every `telemetry`) |
-| `fan:state` | `FanState` | Confirmed change of `fanOn` or `fanMode` (also for a device's first reading) |
+| `device:status` | `Device` | A device goes online or offline, is auto-created, is renamed, or reports a different soil calibration (acknowledgement). RSSI/uptime updates alone don't emit it (they arrive with every `telemetry`) |
 | `alert` | `Alert` | Every new alert (§5) |
 
 Payloads are the same JSON shapes as in REST (§1). Example `telemetry` payload:
 
 ```json
-{ "id": 1235, "deviceId": "gh-01", "ts": "2026-11-09T10:15:10.000Z", "airTemp": 27.5, "humidity": 61.0, "soilMoisture": 43, "soilRaw": 2309, "lux": 815.0, "fanOn": false, "fanMode": "auto", "rssi": -60 }
+{ "id": 1235, "deviceId": "gh-01", "ts": "2026-11-09T10:15:10.000Z", "airTemp": 27.5, "humidity": 61.0, "soilMoisture": 43, "soilRaw": 2309, "lux": 815.0, "rssi": -60 }
 ```
 
 Example `alert` payload:
@@ -603,13 +509,9 @@ QoS 0 or 1, not retained. JSON:
   "soilMoisture": 43,
   "soilRaw": 2310,
   "lux": 812.5,
-  "fanOn": false,
-  "fanMode": "auto",
   "rssi": -61,
   "intervalSec": 5,
   "uptimeSec": 3605,
-  "fanOnTemp": 32,
-  "fanOffTemp": 28,
   "soilDryMv": 2600,
   "soilWetMv": 1200
 }
@@ -618,7 +520,7 @@ QoS 0 or 1, not retained. JSON:
 With a failed sensor, its values are `null` and `errors` names it:
 
 ```json
-{ "ts": 1762683305000, "airTemp": null, "humidity": null, "soilMoisture": 43, "soilRaw": 2310, "lux": 812.5, "fanOn": false, "fanMode": "auto", "rssi": -61, "intervalSec": 5, "fanOnTemp": 32, "fanOffTemp": 28, "soilDryMv": 2600, "soilWetMv": 1200, "errors": ["dht"] }
+{ "ts": 1762683305000, "airTemp": null, "humidity": null, "soilMoisture": 43, "soilRaw": 2310, "lux": 812.5, "rssi": -61, "intervalSec": 5, "soilDryMv": 2600, "soilWetMv": 1200, "errors": ["dht"] }
 ```
 
 | Field | Type | Required | Range |
@@ -629,22 +531,18 @@ With a failed sensor, its values are `null` and `errors` names it:
 | soilMoisture | number \| null | no | 0–100 |
 | soilRaw | integer \| null | no | 0–4095 |
 | lux | number \| null | no | 0–200000 |
-| fanOn | boolean | **yes** | actual relay/MOSFET state |
-| fanMode | FanMode | **yes** | current mode |
 | rssi | integer \| null | no | −127–0 |
 | intervalSec | integer | no (recommended) | 1–3600: the device's normal telemetry interval |
 | uptimeSec | integer | no | ≥ 0: seconds since the device booted (a drop means it rebooted). Stored as `Device.uptimeSec/uptimeAt` |
 | simulator | boolean | no | Dev only: `true` from the simulator. The real firmware never sends it. Not stored; used by the dev-only Demo tools to refuse scenarios for real hardware |
-| fanOnTemp / fanOffTemp | number | no (recommended, send both) | 10–50: the fan thresholds the device is **currently using** (its NVS values). This is how a `setFanThresholds` command is acknowledged. |
 | soilDryMv / soilWetMv | integer | no | 0–4095: soil calibration in use, in mV: sensor in air = 0 %, in water = 100 %. This acknowledges `calibrateSoil`. Stored on the Device (`Device.soilDryMv/soilWetMv`) |
 | errors | string[] | no (omit or `[]` when all ok) | Failing sensors: `"dht"` (airTemp + humidity null), `"bh1750"` (lux null), `"soil"` (implausible reading: soilRaw + soilMoisture null), `"soil_cal"` (calibration invalid: soilMoisture null, soilRaw sent). The backend logs changes |
 
 `soilRaw` from the firmware is the sensor output in **millivolts** (`analogReadMilliVolts`, averaged over 1 s, typically 1000–2800 mV). The simulator sends mV too. The 0–4095 range is kept for compatibility. `soilMoisture` = `(soilDryMv − soilRaw) / (soilDryMv − soilWetMv) × 100`, clamped to 0–100. Capacitive sensors read *lower* when wetter.
 
-- Unknown fields are ignored. Invalid messages (bad JSON, out of range, missing `fanOn`/`fanMode`) are dropped with a warning in the backend log.
+- Unknown fields are ignored. Invalid messages (bad JSON, values out of range) are dropped with a warning in the backend log.
 - Recommended interval: **5–10 s**. Always send `intervalSec`, which drives offline detection.
-- The device **should publish telemetry immediately** after applying a command or after the hysteresis switches the fan, so confirmations are fast. These extra messages don't change `intervalSec`.
-- **Fan fail-safe (firmware):** in `auto`, if the device has had no valid air temperature for 60 s, it turns the fan **on** and keeps it on until a valid reading returns. So `fanOn: true` with `airTemp: null` and `errors: ["dht"]` is expected, not a bug.
+- The device **should publish telemetry immediately** after applying a command, so confirmations are fast. These extra messages don't change `intervalSec`.
 
 ### greenhouse/{deviceId}/status (device → backend)
 
@@ -672,25 +570,11 @@ It becomes **offline** when either of these happens:
 1. The status topic receives `offline`: the Last Will (connection lost) or a planned shutdown. A retained `offline` is applied as described above.
 2. No message arrives for **3 telemetry intervals + 2 s** (`3 × intervalSec + 2`, e.g. 17 s at 5 s). If the device never sent `intervalSec`, the fallback is `OFFLINE_AFTER_SEC` (default 90 s). The backend checks every 2 s. Silence is counted only while the backend is connected to the broker: after a backend restart or a broker outage, devices get a full window to report before being marked offline.
 
-Each online→offline transition emits `device:status` and creates **one** `offline` alert. Each offline→online transition emits `device:status`, creates one `online` info alert, and re-sends the fan thresholds. `offline`/`online` alerts are only created for devices that have sent live data before, never for a device that was just registered.
+Each online→offline transition emits `device:status` and creates **one** `offline` alert. Each offline→online transition emits `device:status`, and creates one `online` info alert. `offline`/`online` alerts are only created for devices that have sent live data before, never for a device that was just registered.
 
 ### greenhouse/{deviceId}/command (backend → device)
 
 QoS 1, not retained. JSON with a unique `id` (UUID) and a `type`. The device should subscribe to it with QoS 1.
-
-**setFanMode**
-
-```json
-{ "id": "6f1c2a9e-3b0d-4a51-9a39-2f3e7c1d8b44", "type": "setFanMode", "mode": "on", "issuedAt": "2026-11-09T10:15:00.000Z" }
-```
-
-**setFanThresholds**: the device validates the values (10–50 °C, on − off ≥ 1) and stores them in NVS.
-
-```json
-{ "id": "0b8e…", "type": "setFanThresholds", "fanOnTemp": 31, "fanOffTemp": 27.5, "issuedAt": "2026-11-09T10:16:00.000Z" }
-```
-
-The backend sends `setFanThresholds` after `PUT /thresholds` (if the device is online) and **every time a device comes online**, so the device copy always matches the backend's. The device confirms by applying the change and publishing telemetry that includes the new `fanOnTemp`/`fanOffTemp`; there is no separate ack topic. The backend stores these as `Device.reportedFanOnTemp/OffTemp` and emits `device:status` when they change.
 
 **calibrateSoil**: the device stores its **current** averaged soil reading (mV) in NVS, as the dry point (`"dry"`, sensor in air = 0 %) or the wet point (`"wet"`, sensor in water = 100 %). It confirms with telemetry that includes the new `soilDryMv`/`soilWetMv`. If the current reading is invalid, the device ignores the command and logs why.
 
@@ -700,7 +584,7 @@ The backend sends `setFanThresholds` after `PUT /thresholds` (if the device is o
 
 An invalid command (unknown `type`, values out of range) must be ignored by the device.
 
-**Stale commands.** A device must ignore a command whose `issuedAt` is more than **30 s** in the past, if its clock is set (NTP). This matters after a broker or Wi-Fi outage: a QoS 1 command can be delivered late, and an old "fan on" shouldn't surprise anyone. The backend answers `503 BROKER_UNAVAILABLE` if the broker doesn't acknowledge a command within 5 s. The simulator follows this rule.
+**Stale commands.** A device must ignore a command whose `issuedAt` is more than **30 s** in the past, if its clock is set (NTP). This matters after a broker or Wi-Fi outage: a QoS 1 command can be delivered late, and an old command shouldn't surprise anyone. The backend answers `503 BROKER_UNAVAILABLE` if the broker doesn't acknowledge a command within 5 s. The simulator follows this rule.
 
 The backend reconnects to the broker forever, with exponential backoff and jitter (1 s → 30 s), and subscribes again on every connect.
 
@@ -710,11 +594,11 @@ The first valid **live** message (not a retained replay) for an unknown `{device
 
 ### Data retention
 
-Raw readings older than `READINGS_RETENTION_DAYS` (default **30**, matching the longest history range) are deleted once a day, starting 1 min after the backend starts. Alerts, fan events and thresholds are kept.
+Raw readings older than `READINGS_RETENTION_DAYS` (default **30**, matching the longest history range) are deleted once a day, starting 1 min after the backend starts. Alerts and thresholds are kept.
 
 ### Dev simulator
 
-`npm run sim` (in `backend/`) acts as device `gh-01` on these exact topics and obeys these commands, using the same fan hysteresis as the firmware. Run `npm run sim -- --help` for the options.
+`npm run sim` (in `backend/`) acts as device `gh-01` on these exact topics and obeys these commands. Run `npm run sim -- --help` for the options.
 
 ---
 
@@ -790,14 +674,12 @@ For the situations that need action, the backend also sends **one SMS to the own
 | Situation | SMS |
 |---|---|
 | A reading becomes **critical** (`severity: "critical"`, §5) for air temperature, humidity, soil moisture or light | One SMS when it starts. Warnings are push only |
-| Air temperature **critical high** | The same SMS says what the fan is doing, as last **confirmed by the device**: `Fan ON (auto)`, `Fan ON (manual)`, `Fan is OFF (manual). Turn it on in the app!` or `Fan is OFF but should be running. Check it!` |
-| The greenhouse is **offline for more than `offlineAfterMin` minutes** | One SMS (not for an outage older than 24 h). The fan keeps running on its own, and the SMS says so |
+| The greenhouse is **offline for more than `offlineAfterMin` minutes** | One SMS (not for an outage older than 24 h) |
 | The situation is **over** | One closing SMS (below) |
 
 **Closing SMS.** Every announced situation gets exactly one:
 
-- Humidity, soil, light: when the `recovered` alert (§5) arrives.
-- Air temperature: **"stabilized" = the fan switched OFF** after the temperature came back in range (`Fan turned OFF`). While the temperature is back in range but the fan still runs in auto mode, nothing is sent. If the fan is held on by hand, or is already off, the closing SMS is sent at once and says `Fan still ON (manual)` / `Fan is OFF`. If the fan hasn't switched off 2 hours after the recovery, it closes with `Fan still ON (auto)`.
+- Air temperature, humidity, soil, light: when the `recovered` alert (§5) arrives.
 - Offline: when the device is back online.
 
 **Rules that limit cost and noise:**
@@ -810,10 +692,10 @@ For the situations that need action, the backend also sends **one SMS to the own
 **Texts.** Plain ASCII, at most 160 characters, so every alert is a single message (the degree sign and other special characters would force a 70-character mode). Units are `C`, `%` and `lux`. The device name is shortened to 20 characters. Times are Asia/Manila.
 
 ```
-ETanim CRITICAL: Air temp 38.4 C (max 35). Fan ON (auto). Greenhouse 01
-ETanim OK: Air temp back to 28 C. Fan turned OFF. Greenhouse 01
+ETanim CRITICAL: Air temp 38.4 C (max 35). Too hot. Greenhouse 01
+ETanim OK: Air temp back in range: 34 C. Greenhouse 01
 ETanim CRITICAL: Humidity 97.3 % (max 85). Greenhouse 01
-ETanim ALERT: Greenhouse 01 offline for 12 min (last seen 14:05). The fan keeps running on its own.
+ETanim ALERT: Greenhouse 01 offline for 12 min (last seen 14:05).
 ETanim OK: Greenhouse 01 is back online.
 ```
 

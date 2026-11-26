@@ -1,0 +1,533 @@
+{
+  "info": {
+    "name": "ETanim greenhouse API",
+    "description": "The backend REST API (docs/api-contract.md). Set the baseUrl variable to your laptop, e.g. http://localhost:4000. Folders: 1 read-only, 2 error handling, 3 changes things (SMS). Run the collection (Runner) for an automatic pass/fail table.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:4000"
+    },
+    {
+      "key": "deviceId",
+      "value": "gh-01"
+    }
+  ],
+  "item": [
+    {
+      "name": "1. Read-only (safe)",
+      "item": [
+        {
+          "name": "Health",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 200', function () { pm.response.to.have.status(200); });",
+                  "const json = pm.response.json();",
+                  "pm.test(\"database is ok\", function () { pm.expect(json.db === 'ok').to.be.true; });",
+                  "pm.test(\"MQTT is connected\", function () { pm.expect(json.mqtt === 'connected').to.be.true; });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/health",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "health"
+              ]
+            },
+            "description": "Is the backend alive? status ok, db ok, mqtt connected."
+          }
+        },
+        {
+          "name": "Devices",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 200', function () { pm.response.to.have.status(200); });",
+                  "const json = pm.response.json();",
+                  "pm.test(\"is a list\", function () { pm.expect(Array.isArray(json)).to.be.true; });",
+                  "pm.test(\"contains the device\", function () { pm.expect(json.some(d => d.id === pm.collectionVariables.get('deviceId'))).to.be.true; });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/devices",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "devices"
+              ]
+            },
+            "description": "All greenhouses. Each has online, lastSeen, rssi, uptimeSec, soilDryMv/soilWetMv."
+          }
+        },
+        {
+          "name": "Latest reading (the evidence request)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 200', function () { pm.response.to.have.status(200); });",
+                  "const json = pm.response.json();",
+                  "pm.test(\"has a reading\", function () { pm.expect(json.reading !== null).to.be.true; });",
+                  "pm.test(\"has air temperature and humidity\", function () { pm.expect(typeof json.reading.airTemp === 'number' && typeof json.reading.humidity === 'number').to.be.true; });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/devices/{{deviceId}}/latest",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "devices",
+                "{{deviceId}}",
+                "latest"
+              ]
+            },
+            "description": "Device + newest reading. This is the one to screenshot."
+          }
+        },
+        {
+          "name": "Last 30 minutes of readings",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 200', function () { pm.response.to.have.status(200); });",
+                  "const json = pm.response.json();",
+                  "pm.test(\"readings are a list\", function () { pm.expect(Array.isArray(json.readings)).to.be.true; });",
+                  "pm.test(\"at most 360 points\", function () { pm.expect(json.readings.length <= 360).to.be.true; });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/devices/{{deviceId}}/recent?minutes=30",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "devices",
+                "{{deviceId}}",
+                "recent"
+              ],
+              "query": [
+                {
+                  "key": "minutes",
+                  "value": "30"
+                }
+              ]
+            },
+            "description": ""
+          }
+        },
+        {
+          "name": "History: air temperature, 24 h",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 200', function () { pm.response.to.have.status(200); });",
+                  "const json = pm.response.json();",
+                  "pm.test(\"has points\", function () { pm.expect(Array.isArray(json.points)).to.be.true; });",
+                  "pm.test(\"has a bucket size\", function () { pm.expect(json.bucketMs > 0).to.be.true; });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/devices/{{deviceId}}/history?metric=airTemp&range=24h",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "devices",
+                "{{deviceId}}",
+                "history"
+              ],
+              "query": [
+                {
+                  "key": "metric",
+                  "value": "airTemp"
+                },
+                {
+                  "key": "range",
+                  "value": "24h"
+                }
+              ]
+            },
+            "description": ""
+          }
+        },
+        {
+          "name": "Heatmap: temperature by hour, 7 days",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 200', function () { pm.response.to.have.status(200); });",
+                  "const json = pm.response.json();",
+                  "pm.test(\"7 days of rows\", function () { pm.expect(json.rows.length === 7).to.be.true; });",
+                  "pm.test(\"24 hours per row\", function () { pm.expect(json.rows.every(r => r.hours.length === 24)).to.be.true; });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/devices/{{deviceId}}/heatmap?metric=airTemp&days=7",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "devices",
+                "{{deviceId}}",
+                "heatmap"
+              ],
+              "query": [
+                {
+                  "key": "metric",
+                  "value": "airTemp"
+                },
+                {
+                  "key": "days",
+                  "value": "7"
+                }
+              ]
+            },
+            "description": ""
+          }
+        },
+        {
+          "name": "Thresholds",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 200', function () { pm.response.to.have.status(200); });",
+                  "const json = pm.response.json();",
+                  "pm.test(\"air temperature limits are in order\", function () { pm.expect(json.airTempMin === null || json.airTempMax === null || json.airTempMin < json.airTempMax).to.be.true; });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/devices/{{deviceId}}/thresholds",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "devices",
+                "{{deviceId}}",
+                "thresholds"
+              ]
+            },
+            "description": ""
+          }
+        },
+        {
+          "name": "Alerts (newest 10)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 200', function () { pm.response.to.have.status(200); });",
+                  "const json = pm.response.json();",
+                  "pm.test(\"has items\", function () { pm.expect(Array.isArray(json.items)).to.be.true; });",
+                  "pm.test(\"has an unread count\", function () { pm.expect(typeof json.unreadCount === 'number').to.be.true; });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/alerts?limit=10",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "alerts"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "10"
+                }
+              ]
+            },
+            "description": ""
+          }
+        },
+        {
+          "name": "Push notification settings",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 200', function () { pm.response.to.have.status(200); });",
+                  "const json = pm.response.json();",
+                  "pm.test(\"has enabled\", function () { pm.expect(typeof json.enabled === 'boolean').to.be.true; });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/notifications/settings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "notifications",
+                "settings"
+              ]
+            },
+            "description": ""
+          }
+        },
+        {
+          "name": "SMS settings",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 200', function () { pm.response.to.have.status(200); });",
+                  "const json = pm.response.json();",
+                  "pm.test(\"has a provider\", function () { pm.expect(typeof json.provider === 'string').to.be.true; });",
+                  "pm.test(\"never exposes a key\", function () { pm.expect(!JSON.stringify(json).toLowerCase().includes('apikey')).to.be.true; });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/sms/settings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "sms",
+                "settings"
+              ]
+            },
+            "description": ""
+          }
+        }
+      ]
+    },
+    {
+      "name": "2. Error handling (safe)",
+      "item": [
+        {
+          "name": "Unknown device is a 404",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 404', function () { pm.response.to.have.status(404); });",
+                  "const json = pm.response.json();",
+                  "pm.test(\"error code NOT_FOUND\", function () { pm.expect(json.error.code === 'NOT_FOUND').to.be.true; });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/devices/no-such-device/latest",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "devices",
+                "no-such-device",
+                "latest"
+              ]
+            },
+            "description": "Proves errors are reported properly."
+          }
+        },
+        {
+          "name": "Invalid range is a 400",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 400', function () { pm.response.to.have.status(400); });",
+                  "const json = pm.response.json();",
+                  "pm.test(\"error code VALIDATION_ERROR\", function () { pm.expect(json.error.code === 'VALIDATION_ERROR').to.be.true; });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/devices/{{deviceId}}/history?metric=airTemp&range=forever",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "devices",
+                "{{deviceId}}",
+                "history"
+              ],
+              "query": [
+                {
+                  "key": "metric",
+                  "value": "airTemp"
+                },
+                {
+                  "key": "range",
+                  "value": "forever"
+                }
+              ]
+            },
+            "description": ""
+          }
+        },
+        {
+          "name": "Unknown route is a 404",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 404', function () { pm.response.to.have.status(404); });",
+                  "const json = pm.response.json();",
+                  "pm.test(\"error code NOT_FOUND\", function () { pm.expect(json.error.code === 'NOT_FOUND').to.be.true; });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/nothing-here",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "nothing-here"
+              ]
+            },
+            "description": ""
+          }
+        }
+      ]
+    },
+    {
+      "name": "3. Changes things (SMS): run on purpose",
+      "item": [
+        {
+          "name": "Send test SMS (real text if SMS_PROVIDER=semaphore!)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Answered (200), or 409 when no number is saved\", function () { pm.expect([200, 409]).to.include(pm.response.code); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/sms/test",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "sms",
+                "test"
+              ]
+            },
+            "description": "In test mode (simulated: true) nothing is sent. With Semaphore configured this SENDS a real SMS and costs credit."
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { MqttClient } from 'mqtt';
-import type { DeviceCommand, FanMode } from '../domain/schemas.js';
+import type { DeviceCommand } from '../domain/schemas.js';
 import { ApiError } from '../http/errors.js';
 import { createLogger } from '../lib/logger.js';
 import { topics } from './topics.js';
@@ -10,11 +10,10 @@ const PUBLISH_TIMEOUT_MS = 5_000;
 
 export interface CommandSender {
   isBrokerConnected(): boolean;
-  /** Publishes setFanMode; returns the command id. Throws 503 if the broker is down. */
-  sendFanMode(deviceId: string, mode: FanMode): Promise<string>;
-  /** Publishes setFanThresholds; returns the command id. Throws 503 if the broker is down. */
-  sendFanThresholds(deviceId: string, fanOnTemp: number, fanOffTemp: number): Promise<string>;
-  /** Publishes calibrateSoil (device stores its current soil reading as the dry/wet point). */
+  /**
+   * Publishes calibrateSoil (device stores its current soil reading as the dry/wet point).
+   * Returns the command id. Throws 503 if the broker is down.
+   */
   sendSoilCalibration(deviceId: string, point: 'dry' | 'wet'): Promise<string>;
 }
 
@@ -50,21 +49,6 @@ export function createCommandSender(client: MqttClient): CommandSender {
 
   return {
     isBrokerConnected: () => client.connected,
-    sendFanMode: (deviceId, mode) =>
-      publish(deviceId, {
-        id: randomUUID(),
-        type: 'setFanMode',
-        mode,
-        issuedAt: new Date().toISOString(),
-      }),
-    sendFanThresholds: (deviceId, fanOnTemp, fanOffTemp) =>
-      publish(deviceId, {
-        id: randomUUID(),
-        type: 'setFanThresholds',
-        fanOnTemp,
-        fanOffTemp,
-        issuedAt: new Date().toISOString(),
-      }),
     sendSoilCalibration: (deviceId, point) =>
       publish(deviceId, {
         id: randomUUID(),

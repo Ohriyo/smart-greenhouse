@@ -4,7 +4,6 @@
 #include <time.h>
 
 #include "config.h"
-#include "fan.h"
 #include "log.h"
 #include "sensors.h"
 #include "settings.h"
@@ -62,26 +61,7 @@ bool parseMqtt(const uint8_t* payload, unsigned int length, Command& c) {
   }
 
   c = Command{};
-  if (strcmp(type, "setFanMode") == 0) {
-    if (!parseFanMode(doc["mode"] | "", c.mode)) {
-      LOGF("cmd", "ignored setFanMode: mode must be auto, on or off");
-      return false;
-    }
-    c.type = CmdType::SetFanMode;
-  } else if (strcmp(type, "setFanThresholds") == 0) {
-    if (!doc["fanOnTemp"].is<float>() || !doc["fanOffTemp"].is<float>()) {
-      LOGF("cmd", "ignored setFanThresholds: missing numbers");
-      return false;
-    }
-    c.type = CmdType::SetFanThresholds;
-    c.fanOnTemp = doc["fanOnTemp"].as<float>();
-    c.fanOffTemp = doc["fanOffTemp"].as<float>();
-    if (!settings::isValidFanThresholds(c.fanOnTemp, c.fanOffTemp)) {
-      LOGF("cmd", "ignored setFanThresholds: %.1f/%.1f (need 10–50 °C, ON − OFF >= 1)", c.fanOnTemp,
-           c.fanOffTemp);
-      return false;
-    }
-  } else if (strcmp(type, "calibrateSoil") == 0) {
+  if (strcmp(type, "calibrateSoil") == 0) {
     const char* point = doc["point"] | "";
     if (strcmp(point, "dry") == 0) c.type = CmdType::CalibrateSoilDry;
     else if (strcmp(point, "wet") == 0) c.type = CmdType::CalibrateSoilWet;
@@ -99,25 +79,12 @@ bool parseMqtt(const uint8_t* payload, unsigned int length, Command& c) {
 
 void apply(const Command& c) {
   switch (c.type) {
-    case CmdType::SetFanMode:
-      fan::setMode(c.mode);
-      settings::setFanMode(c.mode);
-      break;
-    case CmdType::SetFanThresholds:
-      if (!settings::setFanThresholds(c.fanOnTemp, c.fanOffTemp)) LOGF("cmd", "thresholds rejected");
-      break;
     case CmdType::CalibrateSoilDry:
     case CmdType::CalibrateSoilWet:
       captureSoilPoint(c.type == CmdType::CalibrateSoilDry);
       break;
     case CmdType::SetNetwork:
       settings::setNetwork(c.host, c.port, c.deviceId);
-      break;
-    case CmdType::SetFanActiveLow:
-      if (c.activeLow != settings::get().fanActiveLow) {
-        settings::setFanActiveLow(c.activeLow);
-        fan::setActiveLow(c.activeLow);
-      }
       break;
   }
   shared::requestTelemetry();  // report the new state right away (= acknowledgement)

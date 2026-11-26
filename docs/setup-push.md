@@ -249,4 +249,4 @@ Good to know:
 
 ## 10. Try the demo notification
 
-With a development build, the dev-only **Demo** sheet's **Trigger push notification** button sends a *real* push through this whole route ("Greenhouse alert / Air temperature 33.1 °C — fan turned on"). Press Home right after tapping it, and tap the notification to open the Alerts tab. In Expo Go, the same button shows an equivalent local notification instead.
+With a development build, the dev-only **Demo** sheet's **Trigger push notification** button sends a *real* push through this whole route ("Greenhouse alert / Air temperature 36.4 °C — above the 35 °C limit"). Press Home right after tapping it, and tap the notification to open the Alerts tab. In Expo Go, the same button shows an equivalent local notification instead.

@@ -2,10 +2,9 @@ import { useRouter } from 'expo-router';
 import { useMemo, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 
-import { FanHero, SensorCard } from '@/components/greenhouse';
+import { SensorCard } from '@/components/greenhouse';
 import {
   AreaLineChart,
-  BarActivityChart,
   BottomSheet,
   Button,
   Card,
@@ -22,10 +21,8 @@ import {
   Screen,
   SegmentedControl,
   Skeleton,
-  Slider,
   StatTile,
   StatusPill,
-  Stepper,
   TextField,
   Toggle,
   useToast,
@@ -47,9 +44,6 @@ const BAND: ChartPoint[] = Array.from({ length: 48 }, (_, i) => {
   const v = wave(i, 29, 2);
   return { t: now - (47 - i) * 30 * MIN, v, min: v - 1.5, max: v + 1.8 };
 });
-const BARS = Array.from({ length: 24 }, (_, i) => ({
-  fraction: [3, 4, 9, 10, 11, 15, 20, 22].includes(i) ? 1 : i === 16 ? 0.4 : 0,
-}));
 const HEAT = ['M', 'T', 'W', 'T', 'F', 'S', 'S'].map((label, r) => ({
   label,
   values: Array.from({ length: 24 }, (_, h) =>
@@ -68,10 +62,7 @@ export default function Gallery() {
   const toast = useToast();
   const pref = useSettingsStore((s) => s.themePreference);
   const setPref = useSettingsStore((s) => s.setThemePreference);
-  const [mode, setMode] = useState<'auto' | 'on' | 'off'>('off');
   const [metric, setMetric] = useState('temp');
-  const [onTemp, setOnTemp] = useState(32);
-  const [offTemp, setOffTemp] = useState(28);
   const [toggle, setToggle] = useState(true);
   const [sheet, setSheet] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -267,7 +258,6 @@ export default function Gallery() {
           formatValue={(v) => `${v.toFixed(1)} °C`}
           formatTime={(t) => new Date(t).toLocaleTimeString()}
           xLabels={['30m ago', '15m', 'Now']}
-          threshold={{ value: 32, color: colors.chart.airTemp }}
           accessibilityLabel="Air temperature, last 30 minutes, sample data"
         />
       </Card>
@@ -289,16 +279,8 @@ export default function Gallery() {
 
       <View style={styles.row}>
         <StatTile label="Minimum" value="26.4°" />
-        <StatTile label="Fan was on" value="2h 18m" />
+        <StatTile label="Average" value="29.1°" />
       </View>
-
-      <Card eyebrow="Automation" title="Fan activity" meta="2h 18m total">
-        <BarActivityChart
-          buckets={BARS}
-          xLabels={['12 AM', '12 PM', 'Now']}
-          accessibilityLabel="Fan activity sample"
-        />
-      </Card>
 
       <Card eyebrow="Patterns" title="Temperature by hour" meta="Last 7 days">
         <HeatmapGrid
@@ -307,68 +289,6 @@ export default function Gallery() {
           columnLabels={{ 0: '12a', 6: '6a', 12: '12p', 18: '6p' }}
           accessibilityLabel="Heatmap sample"
         />
-      </Card>
-
-      <FanHero
-        running={mode === 'on'}
-        title={mode === 'on' ? 'Fan is running' : 'Fan is off'}
-        caption="Last changed just now"
-      >
-        <SegmentedControl
-          options={[
-            { value: 'auto', label: 'Auto' },
-            { value: 'on', label: 'On' },
-            { value: 'off', label: 'Off' },
-          ]}
-          value={mode}
-          onChange={setMode}
-          accessibilityLabel="Fan mode"
-        />
-      </FanHero>
-
-      <Card eyebrow="Automation" title="Fan thresholds" meta="°C">
-        <View style={styles.gap}>
-          <Stepper
-            label="Fan turns ON at"
-            value={onTemp}
-            onChange={setOnTemp}
-            step={1}
-            min={10}
-            max={50}
-            unit="°"
-            spokenUnit="degrees Celsius"
-          />
-          <Slider
-            value={onTemp}
-            min={20}
-            max={45}
-            step={1}
-            onChange={setOnTemp}
-            color={colors.chart.airTemp}
-            accessibilityLabel="Fan turns ON at"
-            spokenUnit="degrees Celsius"
-          />
-          <Stepper
-            label="Fan turns OFF at"
-            value={offTemp}
-            onChange={setOffTemp}
-            step={1}
-            min={10}
-            max={50}
-            unit="°"
-            spokenUnit="degrees Celsius"
-          />
-          <Slider
-            value={offTemp}
-            min={20}
-            max={45}
-            step={1}
-            onChange={setOffTemp}
-            color={colors.accent}
-            accessibilityLabel="Fan turns OFF at"
-            spokenUnit="degrees Celsius"
-          />
-        </View>
       </Card>
 
       <Card eyebrow="Alert rules" title="Sensor limits">
@@ -417,7 +337,6 @@ export default function Gallery() {
 
       <View style={styles.row}>
         <IconTile icon="checkmark" solid size={40} />
-        <IconTile icon="mci-fan" solid size={40} />
         <IconTile icon="warning-outline" tone="warning" />
         <IconTile icon="alert-circle-outline" tone="danger" />
         <IconTile icon="mci-sprout-outline" tone="accent" />

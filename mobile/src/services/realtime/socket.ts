@@ -85,7 +85,6 @@ export function connectRealtime(url: string, options: ConnectOptions = {}): () =
     useRecentStore.getState().append(reading); // 30-min buffer for live charts
   });
   on(s, 'device:status', (device) => useLiveStore.getState().upsertDevice(device));
-  on(s, 'fan:state', (fan) => useLiveStore.getState().applyFanState(fan));
   on(s, 'alert', (alert) => options.onAlert?.(alert));
 
   return disconnectRealtime;

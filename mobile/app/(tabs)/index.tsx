@@ -5,7 +5,6 @@ import { RefreshControl, StyleSheet, View } from 'react-native';
 import { Card, EmptyState, ErrorState, Eyebrow, Screen, Skeleton, Text } from '@/components/ui';
 import { useAlertsQuery } from '@/features/alerts/queries';
 import { HealthRanges } from '@/features/dashboard/HealthRanges';
-import { HomeFanCard } from '@/features/dashboard/HomeFanCard';
 import { HomeHeader } from '@/features/dashboard/HomeHeader';
 import { LiveBanner } from '@/features/dashboard/LiveBanner';
 import { LiveConditions } from '@/features/dashboard/LiveConditions';
@@ -25,7 +24,7 @@ import { useLiveStore } from '@/store/liveStore';
 import { useSettingsStore } from '@/store/settingsStore';
 import { useTheme } from '@/theme';
 
-/** Home: header, status, live conditions, health ranges, live trend, fan, recent alerts. */
+/** Home: header, status, live conditions, health ranges, live trend, recent alerts. */
 export default function HomeScreen() {
   const theme = useTheme();
   const apiUrl = useSettingsStore((s) => s.apiUrl);
@@ -141,8 +140,7 @@ export default function HomeScreen() {
       <LiveStatusCard deviceId={deviceId} thresholds={thresholds} />
       <LiveConditions deviceId={deviceId} thresholds={thresholds} />
       <HealthRanges deviceId={deviceId} thresholds={thresholds} />
-      <LiveTrend deviceId={deviceId} fanOnTemp={thresholds?.fanOnTemp ?? 32} />
-      <HomeFanCard deviceId={deviceId} />
+      <LiveTrend deviceId={deviceId} />
       <RecentAlerts />
     </Screen>
   );

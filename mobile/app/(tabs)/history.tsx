@@ -20,8 +20,8 @@ import {
 import { LiveBanner } from '@/features/dashboard/LiveBanner';
 import { useDevicesQuery } from '@/features/dashboard/queries';
 import { RANGE_SPOKEN } from '@/features/history/axis';
-import { FanActivityCard, HeatmapCard, HistoryOverview } from '@/features/history/HistorySections';
-import { useFanActivity, useHeatmap, useHistory } from '@/features/history/useHistory';
+import { HeatmapCard, HistoryOverview } from '@/features/history/HistorySections';
+import { useHeatmap, useHistory } from '@/features/history/useHistory';
 import { describeError, errorTitle } from '@/services/api';
 import { useLiveStore } from '@/store/liveStore';
 import { useTheme } from '@/theme';
@@ -32,7 +32,6 @@ import {
   type HistoryRange,
 } from '@/types/api';
 import { formatMetricText, METRICS } from '@/utils/sensors';
-import { formatDuration } from '@/utils/time';
 
 const RANGE_OPTIONS: readonly SegmentOption<HistoryRange>[] = [
   { value: '24h', label: '24h', accessibilityLabel: 'Last 24 hours' },
@@ -79,7 +78,6 @@ export default function HistoryScreen() {
   const deviceId = useLiveStore((s) => s.deviceIds[0]);
   const current = useLiveStore((s) => (deviceId ? s.readings[deviceId]?.[metric] : null) ?? null);
   const history = useHistory(deviceId, metric, range);
-  const activity = useFanActivity(deviceId, range);
   const heatmap = useHeatmap(deviceId, metric);
 
   const stats = useMemo(() => summarize(history.data?.points ?? []), [history.data]);
@@ -90,7 +88,7 @@ export default function HistoryScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const refresh = async () => {
     setRefreshing(true);
-    await Promise.allSettled([history.refetch(), activity.refetch(), heatmap.refetch()]);
+    await Promise.allSettled([history.refetch(), heatmap.refetch()]);
     setRefreshing(false);
   };
 
@@ -100,12 +98,11 @@ export default function HistoryScreen() {
       toast.show('No data to share for this range yet.', 'info');
       return;
     }
-    const fan = activity.data ? `\nFan was on: ${formatDuration(activity.data.totalOnSec)}` : '';
     try {
       await Share.share({
         message:
           `ETanim · ${meta.label}, ${RANGE_SPOKEN[range]} (Asia/Manila)\n` +
-          `Minimum: ${fmt(stats.min)}\nMaximum: ${fmt(stats.max)}\nAverage: ${fmt(stats.avg)}${fan}`,
+          `Minimum: ${fmt(stats.min)}\nMaximum: ${fmt(stats.max)}\nAverage: ${fmt(stats.avg)}`,
       });
     } catch {
       toast.show('Could not open the share menu.', 'error');
@@ -188,8 +185,9 @@ export default function HistoryScreen() {
         <View accessible accessibilityLabel="Loading history" style={styles.loading}>
           <Skeleton height={260} radius={18} />
           <View style={styles.row}>
-            <Skeleton height={76} radius={16} width="48%" />
-            <Skeleton height={76} radius={16} width="48%" />
+            <Skeleton height={76} radius={16} width="31%" />
+            <Skeleton height={76} radius={16} width="31%" />
+            <Skeleton height={76} radius={16} width="31%" />
           </View>
         </View>
       ) : empty ? (
@@ -210,28 +208,17 @@ export default function HistoryScreen() {
             stale={history.isPlaceholderData}
           />
           {stats ? (
-            <View style={styles.grid}>
-              <View style={styles.row}>
-                <StatTile label="Minimum" value={fmt(stats.min)} />
-                <StatTile label="Maximum" value={fmt(stats.max)} />
-              </View>
-              <View style={styles.row}>
-                <StatTile label="Average" value={fmt(stats.avg)} />
-                <StatTile
-                  label="Fan was on"
-                  value={activity.data ? formatDuration(activity.data.totalOnSec) : '—'}
-                />
-              </View>
+            <View style={styles.row}>
+              <StatTile label="Minimum" value={fmt(stats.min)} />
+              <StatTile label="Average" value={fmt(stats.avg)} />
+              <StatTile label="Maximum" value={fmt(stats.max)} />
             </View>
           ) : null}
         </>
       )}
 
       {!noDevice ? (
-        <>
-          <FanActivityCard range={range} data={activity.data} loading={activity.isPending} />
-          <HeatmapCard metric={metric} data={heatmap.data} loading={heatmap.isPending} />
-        </>
+        <HeatmapCard metric={metric} data={heatmap.data} loading={heatmap.isPending} />
       ) : null}
 
       <BottomSheet visible={menu} onClose={() => setMenu(false)} eyebrow="History" title="Options">
@@ -260,6 +247,5 @@ const styles = StyleSheet.create({
   flex: { flex: 1 },
   chips: { gap: 8 },
   loading: { gap: 12 },
-  grid: { gap: 10 },
   row: { flexDirection: 'row', gap: 10 },
 });

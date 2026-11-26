@@ -28,7 +28,7 @@ interface RadialGaugeProps {
   endLabel: string;
   /** Softly tinted part of the track (the optimal zone). */
   zone?: readonly [number, number] | null;
-  /** Small marks outside the arc (e.g. fan OFF/ON thresholds). */
+  /** Small marks outside the arc (e.g. limits). */
   ticks?: readonly number[];
   size?: number;
   accessibilityLabel: string;

@@ -1,10 +1,8 @@
 import { Router } from 'express';
-import { toDeviceDto, toFanStateDto, toReadingDto, toThresholdsDto } from '../../domain/dto.js';
+import { toDeviceDto, toReadingDto, toThresholdsDto } from '../../domain/dto.js';
 import {
   DeviceIdSchema,
   DeviceRenameBodySchema,
-  FanActivityQuerySchema,
-  FanCommandBodySchema,
   HeatmapQuerySchema,
   HistoryQuerySchema,
   RecentQuerySchema,
@@ -14,11 +12,10 @@ import {
 import type { CommandSender } from '../../mqtt/commands.js';
 import { getDeviceOr404, listDevices, renameDevice } from '../../services/devices.js';
 import type { Realtime } from '../../realtime/socket.js';
-import { getFanActivity } from '../../services/fanActivity.js';
 import { getHeatmap } from '../../services/heatmap.js';
 import { getHistory } from '../../services/history.js';
 import { getRecentReadings } from '../../services/recent.js';
-import { getLastFanEvent, getLatestReading } from '../../services/readings.js';
+import { getLatestReading } from '../../services/readings.js';
 import { getThresholds, replaceThresholds } from '../../services/thresholds.js';
 import { ApiError } from '../errors.js';
 
@@ -48,14 +45,10 @@ export function devicesRouter(commands: CommandSender, getRealtime: () => Realti
 
   router.get('/:id/latest', async (req, res) => {
     const device = await getDeviceOr404(deviceIdParam(req.params.id));
-    const [reading, lastFanChange] = await Promise.all([
-      getLatestReading(device.id),
-      getLastFanEvent(device.id),
-    ]);
+    const reading = await getLatestReading(device.id);
     res.json({
       device: toDeviceDto(device),
       reading: reading ? toReadingDto(reading) : null,
-      lastFanChange: lastFanChange ? toFanStateDto(lastFanChange) : null,
     });
   });
 
@@ -63,13 +56,6 @@ export function devicesRouter(commands: CommandSender, getRealtime: () => Realti
     const device = await getDeviceOr404(deviceIdParam(req.params.id));
     const query = HistoryQuerySchema.parse(req.query);
     res.json(await getHistory(device.id, query.metric, query.range));
-  });
-
-  // How long the fan ran, per Manila hour / 6 h / day (History "Fan activity").
-  router.get('/:id/fan-activity', async (req, res) => {
-    const device = await getDeviceOr404(deviceIdParam(req.params.id));
-    const { range } = FanActivityQuerySchema.parse(req.query);
-    res.json(await getFanActivity(device.id, range, device.telemetryIntervalSec));
   });
 
   // Hourly averages per Manila day (History "Temperature by hour").
@@ -103,27 +89,9 @@ export function devicesRouter(commands: CommandSender, getRealtime: () => Realti
   router.put('/:id/thresholds', async (req, res) => {
     const device = await getDeviceOr404(deviceIdParam(req.params.id));
     const body = ThresholdsBodySchema.parse(req.body);
+    // Alert limits are checked by the backend only: nothing is sent to the device.
     const saved = await replaceThresholds(device.id, body);
-
-    // The ESP32 keeps its own copy of the fan thresholds (NVS). Push them now if
-    // possible; otherwise they are pushed automatically when the device reconnects.
-    let deviceSync: 'sent' | 'pending' = 'pending';
-    if (device.online && commands.isBrokerConnected()) {
-      await commands.sendFanThresholds(device.id, saved.fanOnTemp, saved.fanOffTemp);
-      deviceSync = 'sent';
-    }
-    res.json({ thresholds: toThresholdsDto(saved), deviceSync });
-  });
-
-  router.post('/:id/fan', async (req, res) => {
-    const device = await getDeviceOr404(deviceIdParam(req.params.id));
-    const { mode } = FanCommandBodySchema.parse(req.body);
-    if (!device.online) {
-      throw new ApiError(409, 'DEVICE_OFFLINE', `Device "${device.id}" is offline`);
-    }
-    const commandId = await commands.sendFanMode(device.id, mode);
-    // 202: sent, not yet confirmed. Confirmation = the next telemetry / fan:state event.
-    res.status(202).json({ commandId, deviceId: device.id, mode, status: 'sent' });
+    res.json({ thresholds: toThresholdsDto(saved) });
   });
 
   // The device stores its *current* soil reading as 0 % (dry: sensor in air) or

@@ -42,7 +42,7 @@ interface AreaLineChartProps {
   formatTime: (t: number) => string;
   /** Labels spread evenly under the chart ("30m ago", "15m", "Now"). */
   xLabels: readonly string[];
-  /** Dashed horizontal line (e.g. fan ON threshold). */
+  /** Dashed horizontal line (e.g. a limit). */
   threshold?: { value: number; color: string } | null;
   /** Vertical dashed line + ring at a moment (e.g. when an alert fired). */
   marker?: { t: number; color: string } | null;

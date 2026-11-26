@@ -1,4 +1,5 @@
-// Bring-up test: capacitive soil moisture v1.2 only.   pio run -e test_soil -t upload -t monitor
+// Bring-up test: capacitive soil moisture v1.2 only. Arduino IDE: open this file, Upload,
+// Serial Monitor 115200.
 // Prints the averaged sensor output in mV once per second (16 samples, like the firmware).
 // Wiring: VCC → 3.3 V (NOT 5 V), GND → GND, AOUT → GPIO34.
 // Expect roughly 2400–2900 mV in air and 1000–1500 mV in water. Note both: they are your
@@ -6,7 +7,15 @@
 
 #include <Arduino.h>
 
-#include "config.h"
+// Same values as SmartGreenhouse/config.h (a sketch can't include another sketch's files).
+namespace cfg {
+constexpr uint8_t PIN_SOIL = 34;
+constexpr uint32_t SOIL_SAMPLE_MS = 62;
+constexpr uint8_t SOIL_SAMPLES = 16;
+constexpr int SOIL_MIN_VALID_MV = 50;
+constexpr int SOIL_MAX_VALID_MV = 3100;
+constexpr int SOIL_MAX_SPREAD_MV = 400;
+}  // namespace cfg
 
 int samples[cfg::SOIL_SAMPLES];
 uint8_t count = 0;

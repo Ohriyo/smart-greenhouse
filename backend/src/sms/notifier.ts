@@ -1,12 +1,10 @@
-import type { AlertDto, FanStateDto } from '../domain/dto.js';
+import type { AlertDto } from '../domain/dto.js';
 import { createLogger } from '../lib/logger.js';
 import {
-  airTempBackMessage,
   backInRangeMessage,
   backOnlineMessage,
   criticalMessage,
   offlineMessage,
-  stabilizedMessage,
   testMessage,
 } from './messages.js';
 import type { SmsProvider } from './provider.js';
@@ -23,8 +21,6 @@ const log = createLogger('sms');
 
 const MIN_MS = 60_000;
 const DAY_MS = 24 * 60 * MIN_MS;
-/** Air temp back in range but the fan still runs: stop waiting for it to switch off after this. */
-export const STABILIZE_TIMEOUT_MS = 2 * 60 * MIN_MS;
 /** A critical situation announced this long ago is closed silently (no stale "all clear"). */
 export const EPISODE_MAX_AGE_MS = 48 * 60 * MIN_MS;
 /** An offline greenhouse older than this is not announced (the owner knew long ago). */
@@ -52,8 +48,6 @@ export type TestOutcome =
 export interface SmsNotifier {
   /** A new alert from the rules engine. Critical breaches are announced; recoveries close them. */
   onAlert(alert: AlertDto): Promise<void>;
-  /** A confirmed fan change: "fan turned OFF" closes an air-temperature episode. */
-  onFanEvent(event: FanStateDto): Promise<void>;
   /** Periodic: greenhouse offline for N minutes, back online, stale episodes. */
   sweep(): Promise<void>;
   sendTest(): Promise<TestOutcome>;
@@ -77,11 +71,9 @@ interface Deps {
  * SMS to the owner, for the situations that need action:
  *
  * - a CRITICAL reading (air temp, humidity, soil, light): one SMS when it starts.
- *   Air temperature also says what the fan is doing (as confirmed by the device).
  * - the greenhouse offline for more than N minutes: one SMS.
- * - when it's over, one closing SMS. For air temperature "over" means the fan
- *   switched OFF after the temperature settled; if the fan is held on by hand (or
- *   never switches off) the closing SMS says the fan is still on.
+ * - when it's over (the reading is back in range, or the greenhouse is back
+ *   online), one closing SMS.
  *
  * Open situations are stored in the database (SmsEpisode), so a backend restart
  * neither repeats an SMS nor loses the closing one. An episode exists only if its
@@ -93,7 +85,7 @@ export function createSmsNotifier({
   dailyCap,
   clock = Date.now,
 }: Deps): SmsNotifier {
-  // All work runs one task at a time: telemetry, fan events and the sweep can't interleave.
+  // All work runs one task at a time: alerts and the sweep can't interleave.
   let tail: Promise<unknown> = Promise.resolve();
   function serial<T>(task: () => Promise<T>): Promise<T> {
     const result = tail.then(task, task);
@@ -161,14 +153,12 @@ export function createSmsNotifier({
       alert.value !== null
     ) {
       if (await store.findOpenEpisode(deviceId, metric)) return;
-      const latest = await store.latestReading(deviceId);
       const body = criticalMessage({
         metric,
         type: alert.type,
         value: alert.value,
         limit: alert.limit,
         name: await deviceName(deviceId),
-        fan: latest ? { on: latest.fanOn, mode: latest.fanMode } : null,
       });
       const result = await deliver('critical', deviceId, metric, body, settings.phone);
       if (result.status === 'sent') await store.openEpisode(deviceId, metric, now);
@@ -179,46 +169,14 @@ export function createSmsNotifier({
     if (alert.type === 'recovered') {
       const episode = await store.findOpenEpisode(deviceId, metric);
       if (!episode) return;
-      const name = await deviceName(deviceId);
-
-      if (metric !== 'airTemp') {
-        const body = backInRangeMessage({ metric, value: alert.value, name });
-        await deliver('closing', deviceId, metric, body, settings.phone);
-        await store.closeEpisode(episode.id, now);
-        return;
-      }
-
-      // Air temperature: "stabilized" = the fan switched off by itself. While it still
-      // runs in auto mode, wait for that (onFanEvent), up to STABILIZE_TIMEOUT_MS.
-      const latest = await store.latestReading(deviceId);
-      if (latest?.fanOn && latest.fanMode === 'auto') {
-        await store.markRecovered(episode.id, now);
-        return;
-      }
-      const body = airTempBackMessage({
+      const body = backInRangeMessage({
+        metric,
         value: alert.value,
-        name,
-        fan: latest ? { on: latest.fanOn, mode: latest.fanMode } : null,
+        name: await deviceName(deviceId),
       });
       await deliver('closing', deviceId, metric, body, settings.phone);
       await store.closeEpisode(episode.id, now);
     }
-  }
-
-  async function handleFanEvent(event: FanStateDto): Promise<void> {
-    if (event.fanOn) return;
-    const settings = await active();
-    if (!settings) return;
-    const episode = await store.findOpenEpisode(event.deviceId, 'airTemp');
-    // Only after the temperature came back in range (a manual "off" during the
-    // emergency is not "stabilized").
-    if (!episode?.recoveredAt) return;
-    const body = stabilizedMessage({
-      value: event.airTemp,
-      name: await deviceName(event.deviceId),
-    });
-    await deliver('closing', event.deviceId, 'airTemp', body, settings.phone);
-    await store.closeEpisode(episode.id, new Date(clock()));
   }
 
   async function handleSweep(): Promise<void> {
@@ -250,37 +208,19 @@ export function createSmsNotifier({
       if (result.status === 'sent') await store.openEpisode(d.id, 'offline', new Date(now));
     }
 
+    // Back online → closing SMS.
     for (const e of open) {
-      // Back online → closing SMS.
-      if (e.metric === 'offline') {
-        const device = devices.find((d) => d.id === e.deviceId);
-        if (device?.online) {
-          await deliver(
-            'closing',
-            e.deviceId,
-            'offline',
-            backOnlineMessage({ name: device.name }),
-            settings.phone,
-          );
-          await store.closeEpisode(e.id, new Date(now));
-        }
-        continue;
-      }
-      // Air temp back in range for a long time but the fan never switched off.
-      if (
-        e.metric === 'airTemp' &&
-        e.recoveredAt &&
-        now - e.recoveredAt.getTime() >= STABILIZE_TIMEOUT_MS
-      ) {
-        const latest = await store.latestReading(e.deviceId);
-        const body = airTempBackMessage({
-          value: latest?.airTemp ?? null,
-          name: await deviceName(e.deviceId),
-          fan: latest ? { on: latest.fanOn, mode: latest.fanMode } : null,
-        });
-        await deliver('closing', e.deviceId, 'airTemp', body, settings.phone);
-        await store.closeEpisode(e.id, new Date(now));
-      }
+      if (e.metric !== 'offline') continue;
+      const device = devices.find((d) => d.id === e.deviceId);
+      if (!device?.online) continue;
+      await deliver(
+        'closing',
+        e.deviceId,
+        'offline',
+        backOnlineMessage({ name: device.name }),
+        settings.phone,
+      );
+      await store.closeEpisode(e.id, new Date(now));
     }
   }
 
@@ -301,7 +241,6 @@ export function createSmsNotifier({
 
   return {
     onAlert: (alert) => safely('alert SMS', () => handleAlert(alert)),
-    onFanEvent: (event) => safely('fan SMS', () => handleFanEvent(event)),
     sweep: () => safely('SMS sweep', handleSweep),
 
     sendTest: () =>

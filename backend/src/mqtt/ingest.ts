@@ -1,29 +1,18 @@
-import { toDeviceDto, toFanStateDto, toReadingDto } from '../domain/dto.js';
+import { toDeviceDto, toReadingDto } from '../domain/dto.js';
 import { StatusSchema, TelemetrySchema } from '../domain/schemas.js';
 import { createLogger } from '../lib/logger.js';
 import type { Realtime } from '../realtime/socket.js';
 import type { RulesEngine } from '../rules/engine.js';
 import type { DevTools } from '../dev/devTools.js';
-import type { SmsNotifier } from '../sms/notifier.js';
-import {
-  getDevice,
-  setPresence,
-  updateReportedFanThresholds,
-  type PresenceResult,
-} from '../services/devices.js';
+import { getDevice, setPresence, type PresenceResult } from '../services/devices.js';
 import { pickTimestamp, saveReading } from '../services/readings.js';
-import { getThresholds } from '../services/thresholds.js';
-import type { CommandSender } from './commands.js';
 import { parseTopic } from './topics.js';
 
 const log = createLogger('ingest');
 
 interface IngestDeps {
   realtime: Realtime;
-  commands: CommandSender;
   rules: RulesEngine;
-  /** Told about confirmed fan changes ("fan turned OFF" closes an air-temperature SMS episode). */
-  sms: Pick<SmsNotifier, 'onFanEvent'>;
   /** Remembers which devices are the simulator (dev-only Demo tools). */
   devTools: Pick<DevTools, 'noteTelemetry'>;
   /** Start of the current broker connection (null while disconnected). */
@@ -42,16 +31,9 @@ function parseJson(text: string): unknown {
   }
 }
 
-export function createIngest({
-  realtime,
-  commands,
-  rules,
-  sms,
-  devTools,
-  listeningSince,
-}: IngestDeps): Ingest {
-  // Messages of one device are processed strictly in order (fan-change detection
-  // compares with the previous reading); different devices run concurrently.
+export function createIngest({ realtime, rules, devTools, listeningSince }: IngestDeps): Ingest {
+  // Messages of one device are processed strictly in order (presence and alert
+  // rules depend on the previous message); different devices run concurrently.
   const queues = new Map<string, Promise<void>>();
   /** Last reported sensor error set per device ("dht,soil"), to log changes only. */
   const sensorErrors = new Map<string, string>();
@@ -67,8 +49,8 @@ export function createIngest({
   }
 
   /**
-   * On an online/offline transition: emit device:status, create the offline/online
-   * alert and, when it came online, push its fan thresholds.
+   * On an online/offline transition: emit device:status and create the
+   * offline/online alert.
    */
   async function afterPresence(
     deviceId: string,
@@ -84,10 +66,6 @@ export function createIngest({
     if (presence.seenBefore) {
       if (device.online) await rules.deviceCameOnline(device);
       else await rules.deviceWentOffline(device, offlineReason);
-    }
-    if (device.online && commands.isBrokerConnected()) {
-      const t = await getThresholds(deviceId);
-      await commands.sendFanThresholds(deviceId, t.fanOnTemp, t.fanOffTemp);
     }
   }
 
@@ -107,7 +85,7 @@ export function createIngest({
 
     const t = parsed.data;
     devTools.noteTelemetry(deviceId, t.simulator);
-    let presence = await setPresence(deviceId, true, receivedAt, t.intervalSec, {
+    const presence = await setPresence(deviceId, true, receivedAt, t.intervalSec, {
       rssi: t.rssi,
       uptimeSec: t.uptimeSec,
       soilDryMv: t.soilDryMv,
@@ -116,34 +94,16 @@ export function createIngest({
     if (presence.calibrationChanged) {
       log.info(`${deviceId} soil calibration now dry ${t.soilDryMv} / wet ${t.soilWetMv} mV`);
     }
-    // device:status acknowledges a changed calibration or fan thresholds (once).
-    let statusDirty = presence.calibrationChanged;
     const ts = pickTimestamp(parsed.data.ts, receivedAt);
-    const { reading, fanEvent } = await saveReading(deviceId, parsed.data, ts);
+    const reading = await saveReading(deviceId, parsed.data, ts);
 
-    // The device reports the fan thresholds it applied (acknowledgement).
-    const { fanOnTemp, fanOffTemp } = parsed.data;
-    if (fanOnTemp !== undefined && fanOffTemp !== undefined) {
-      const updated = await updateReportedFanThresholds(
-        presence.device,
-        fanOnTemp,
-        fanOffTemp,
-        receivedAt,
-      );
-      if (updated) {
-        log.info(`${deviceId} applied fan thresholds ${fanOnTemp}/${fanOffTemp} °C`);
-        presence = { ...presence, device: updated };
-        statusDirty = true;
-      }
+    // device:status acknowledges a changed soil calibration (once). afterPresence
+    // emits device:status itself when online/offline changed.
+    if (presence.calibrationChanged && !presence.changed) {
+      realtime.emitDeviceStatus(toDeviceDto(presence.device));
     }
-    // afterPresence emits device:status itself when online/offline changed.
-    if (statusDirty && !presence.changed) realtime.emitDeviceStatus(toDeviceDto(presence.device));
 
     realtime.emitTelemetry(toReadingDto(reading));
-    if (fanEvent) {
-      realtime.emitFanState(toFanStateDto(fanEvent));
-      void sms.onFanEvent(toFanStateDto(fanEvent)); // never throws
-    }
     await afterPresence(deviceId, presence, '');
     await rules.evaluateReading(presence.device, reading);
   }

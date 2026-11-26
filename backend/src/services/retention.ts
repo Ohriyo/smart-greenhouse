@@ -9,8 +9,8 @@ const BATCH_SIZE = 5_000;
 const FIRST_RUN_DELAY_MS = 60_000; // let startup (retained replay, sweeps) settle first
 
 /**
- * Deletes raw readings older than `days` (in batches). Alerts, fan events and
- * thresholds are kept. Returns the number of deleted rows.
+ * Deletes raw readings older than `days` (in batches). Alerts and thresholds
+ * are kept. Returns the number of deleted rows.
  */
 export async function pruneReadings(days: number, now = new Date()): Promise<number> {
   // Reading.ts is stored as epoch milliseconds (adapter timestampFormat "unixepoch-ms").

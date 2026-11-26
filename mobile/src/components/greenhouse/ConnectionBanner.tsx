@@ -85,7 +85,7 @@ function detailFor(
     case 'backend-unreachable':
       return `Is the backend running and the laptop awake? ${saved} Push alerts also need the backend running.`;
     case 'device-offline':
-      return `No data since then (last data ${lastSeen}). The fan keeps running on its own.`;
+      return `No data since then (last data ${lastSeen}).`;
     case 'connecting':
       return 'Opening the live connection to your laptop.';
     case 'reconnecting':

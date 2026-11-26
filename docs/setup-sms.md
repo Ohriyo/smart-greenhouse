@@ -1,11 +1,11 @@
 # SMS alerts
 
-The backend sends **one SMS to the owner's phone** when something needs action: a critical reading (air temperature, humidity, soil moisture, light), or the greenhouse being offline for more than N minutes. For air temperature it also says what the fan is doing, and it sends a closing SMS when the temperature has stabilized and the fan switched off. The exact rules and texts are in [api-contract.md §7](api-contract.md).
+The backend sends **one SMS to the owner's phone** when something needs action: a critical reading (air temperature, humidity, soil moisture, light), or the greenhouse being offline for more than N minutes. When the reading is back in range (or the greenhouse is back online), it sends one closing SMS. The exact rules and texts are in [api-contract.md §7](api-contract.md).
 
 Push notifications ([setup-push.md](setup-push.md)) stay the everyday alert. SMS is for emergencies.
 
 > **Limits to know about**
-> - The SMS is sent by the **backend on your laptop**, through an SMS service on the internet. If the laptop is off, asleep, or has no internet, **no SMS (and no push) is sent**. The ESP32 itself keeps the fan running.
+> - The SMS is sent by the **backend on your laptop**, through an SMS service on the internet. If the laptop is off, asleep, or has no internet, **no SMS (and no push) is sent**. The ESP32 itself keeps reading its sensors.
 > - Every message costs credit with the SMS provider. A daily cap (default 10) protects you from a surprise bill.
 
 ## 1. Try it first in test mode (free)
@@ -16,7 +16,7 @@ Nothing to set up. By default `SMS_PROVIDER=console`: the backend **writes the S
 2. In the app: **Settings → SMS alerts**. Enter the owner's number, switch **SMS alerts** on, tap **Save**.
 3. Tap **Send test SMS**. In the backend window you see:
    `[test mode, not sent] SMS to +63••••••4567: "ETanim test: SMS alerts are working."`
-4. Check the real situations with the simulator (`npm run sim -- --hot` in `backend/`). When the temperature becomes critical, the log shows the critical SMS with the fan state, and later the closing one.
+4. Check the real situations with the simulator (`npm run sim -- --hot` in `backend/`). When the temperature becomes critical, the log shows the critical SMS, and later the closing one.
 
 ## 2. Send real SMS with Semaphore
 
@@ -72,6 +72,6 @@ The app shows the last result under **Last SMS**, and the backend log has the fu
 ## How it behaves (short version)
 
 - **Once per situation:** a critical reading is announced once, not every few seconds. When it's over, one closing SMS follows.
-- **Air temperature:** critical → "Fan ON (auto)" (or "Fan is OFF … Turn it on in the app!" if the fan isn't running). When the temperature is back in range **and the fan switches OFF**, you get "Air temp back to 28 C. Fan turned OFF."
-- **Offline:** after N minutes without data (default 10). The SMS says the fan keeps running on its own. One more SMS when it's back.
+- **Air temperature:** critical → "Air temp 38.4 C (max 35). Too hot." (or "Too cold."). When it is back in range you get "Air temp back in range: 34 C."
+- **Offline:** after N minutes without data (default 10). One more SMS when it's back.
 - **A backend restart** doesn't repeat messages or lose the closing one.

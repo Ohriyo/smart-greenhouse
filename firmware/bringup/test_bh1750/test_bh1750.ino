@@ -1,12 +1,18 @@
-// Bring-up test: BH1750 light sensor only.   pio run -e test_bh1750 -t upload -t monitor
+// Bring-up test: BH1750 light sensor only. Arduino IDE: open this file, Upload, Serial Monitor 115200.
 // Scans the I2C bus every 5 s until the sensor answers, then prints lux every second.
-// Wiring: VCC → 3.3 V, GND → GND, SDA → GPIO21, SCL → GPIO22, ADDR → GND or unconnected (0x23).
+// Wiring (test setup): VCC → 3.3 V, GND → GND, SDA → GPIO25, SCL → GPIO33, ADDR → GND or open (0x23).
+// The main firmware still uses GPIO21/22 (config.h) until this setup is confirmed working.
 
 #include <Arduino.h>
 #include <BH1750.h>
 #include <Wire.h>
 
-#include "config.h"
+// Same values as SmartGreenhouse/config.h (a sketch can't include another sketch's files).
+namespace cfg {
+constexpr uint8_t PIN_SDA = 25;  // test wiring (main firmware: 21)
+constexpr uint8_t PIN_SCL = 33;  // test wiring (main firmware: 22)
+constexpr uint8_t BH1750_ADDR = 0x23;
+}  // namespace cfg
 
 BH1750 light(cfg::BH1750_ADDR);
 bool ready = false;
@@ -22,7 +28,7 @@ void scan() {
       found++;
     }
   }
-  if (found == 0) Serial.print(" nothing → check SDA=21, SCL=22, 3.3 V, GND");
+  if (found == 0) Serial.printf(" nothing → check SDA=%u, SCL=%u, 3.3 V, GND", cfg::PIN_SDA, cfg::PIN_SCL);
   Serial.println();
 }
 

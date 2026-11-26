@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
 
-import { DeviceSchema, ReadingSchema, type Device, type FanState, type Reading } from '@/types/api';
+import { DeviceSchema, ReadingSchema, type Device, type Reading } from '@/types/api';
 
 /**
  * Socket.IO connection state:
@@ -38,8 +38,6 @@ interface LiveState {
   readings: Record<string, Reading>;
   /** When the app received data for a device in *this* session (ms, phone clock). Not persisted. */
   lastUpdated: Record<string, number>;
-  /** When the fan state (on/off or mode) last changed per device (ms, device time). */
-  fanChangedAt: Record<string, number>;
   socket: SocketStatus;
   socketError: string | null;
   /** True once the saved data has been read from storage. */
@@ -50,7 +48,6 @@ interface LiveState {
   setDevices: (devices: Device[]) => void;
   upsertDevice: (device: Device) => void;
   setReading: (reading: Reading) => void;
-  applyFanState: (state: FanState) => void;
   setSocket: (status: SocketStatus, error?: string | null) => void;
 }
 
@@ -59,7 +56,6 @@ const emptyData = {
   deviceIds: [],
   readings: {},
   lastUpdated: {},
-  fanChangedAt: {},
 };
 
 /** What is saved, validated when read back (storage is external input). */
@@ -68,7 +64,6 @@ const PersistedSchema = z.object({
   devices: z.record(z.string(), DeviceSchema),
   deviceIds: z.array(z.string()),
   readings: z.record(z.string(), ReadingSchema),
-  fanChangedAt: z.record(z.string(), z.number()),
 });
 
 export const useLiveStore = create<LiveState>()(
@@ -110,25 +105,6 @@ export const useLiveStore = create<LiveState>()(
           };
         }),
 
-      applyFanState: (fan) =>
-        set((s) => {
-          const changedAt = Date.parse(fan.ts);
-          const prevChange = s.fanChangedAt[fan.deviceId];
-          const fanChangedAt =
-            prevChange === undefined || changedAt > prevChange
-              ? { ...s.fanChangedAt, [fan.deviceId]: changedAt }
-              : s.fanChangedAt;
-          const current = s.readings[fan.deviceId];
-          if (!current || Date.parse(current.ts) > changedAt) return { fanChangedAt };
-          return {
-            fanChangedAt,
-            readings: {
-              ...s.readings,
-              [fan.deviceId]: { ...current, fanOn: fan.fanOn, fanMode: fan.fanMode },
-            },
-          };
-        }),
-
       setSocket: (status, error = null) => set({ socket: status, socketError: error }),
     }),
     {
@@ -140,7 +116,6 @@ export const useLiveStore = create<LiveState>()(
         devices: s.devices,
         deviceIds: s.deviceIds,
         readings: s.readings,
-        fanChangedAt: s.fanChangedAt,
       }),
       merge: (persisted, current) => {
         const parsed = PersistedSchema.safeParse(persisted);

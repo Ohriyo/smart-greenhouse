@@ -132,7 +132,7 @@ describe('push sender', () => {
     assert.equal(plain.title, 'ETanim');
     assert.match(String(plain.body), /push alerts work/);
     assert.equal(demo.title, 'Greenhouse alert');
-    assert.equal(demo.body, 'Air temperature 33.1 °C — fan turned on');
+    assert.equal(demo.body, 'Air temperature 36.4 °C — above the 35 °C limit');
     assert.deepEqual(demo.data, { url: '/alerts' });
     assert.equal(demo.channelId, ALERT_CHANNEL_ID);
   });

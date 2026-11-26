@@ -7,7 +7,7 @@ import { RECENT_WINDOW_MS, selectRecent, useRecentStore } from '@/store/recentSt
 import { useTheme } from '@/theme';
 import type { AlertMetric } from '@/types/api';
 import { manilaTime } from '@/utils/manilaTime';
-import { formatAxis, formatMetricText, formatValue, METRICS } from '@/utils/sensors';
+import { formatAxis, formatMetricText, METRICS } from '@/utils/sensors';
 import { useNow } from '@/utils/time';
 
 import { useIsLive } from './useLiveness';
@@ -16,16 +16,9 @@ const METRICS_ORDER: AlertMetric[] = ['airTemp', 'humidity', 'soilMoisture', 'lu
 
 /**
  * "LIVE TREND / Last 30 minutes": real readings from the live buffer; new
- * telemetry appends a point (the end dot pulses). Temperature shows the fan ON
- * threshold as a dashed line.
+ * telemetry appends a point (the end dot pulses).
  */
-export const LiveTrend = memo(function LiveTrend({
-  deviceId,
-  fanOnTemp,
-}: {
-  deviceId: string;
-  fanOnTemp: number;
-}) {
+export const LiveTrend = memo(function LiveTrend({ deviceId }: { deviceId: string }) {
   const theme = useTheme();
   const { colors } = theme;
   const [metric, setMetric] = useState<AlertMetric>('airTemp');
@@ -41,12 +34,6 @@ export const LiveTrend = memo(function LiveTrend({
   );
   const domain = useMemo(() => [now - RECENT_WINDOW_MS, now] as const, [now]);
   const hasData = chartPoints.some((p) => p.v !== null);
-  // Stable object: a new one every render would defeat the chart's memo and re-compute its geometry.
-  const airTempColor = colors.chart.airTemp;
-  const threshold = useMemo(
-    () => (metric === 'airTemp' ? { value: fanOnTemp, color: airTempColor } : null),
-    [metric, fanOnTemp, airTempColor],
-  );
   const color = colors.chart[METRICS[metric].colorKey];
   const latest = [...chartPoints].reverse().find((p) => p.v !== null);
   const summary = hasData
@@ -93,7 +80,6 @@ export const LiveTrend = memo(function LiveTrend({
           gapMs={3 * intervalSec * 1000 + 5000}
           height={150}
           floorZero={metric !== 'airTemp'}
-          threshold={threshold}
           formatTick={(v) => formatAxis(metric, v)}
           formatValue={(v) => formatMetricText(metric, v)}
           formatTime={(t) => manilaTime(t)}
@@ -107,15 +93,6 @@ export const LiveTrend = memo(function LiveTrend({
           </Text>
         </View>
       )}
-
-      {metric === 'airTemp' ? (
-        <View style={styles.legend} importantForAccessibility="no-hide-descendants">
-          <View style={[styles.dash, { borderColor: colors.chart.airTemp }]} />
-          <Text variant="micro" color="secondary">
-            Fan ON threshold · {formatValue(fanOnTemp, fanOnTemp % 1 ? 1 : 0)}°C
-          </Text>
-        </View>
-      ) : null}
     </Card>
   );
 });
@@ -123,6 +100,4 @@ export const LiveTrend = memo(function LiveTrend({
 const styles = StyleSheet.create({
   chips: { gap: 8, paddingBottom: 12 },
   empty: { height: 150, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
-  legend: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 8 },
-  dash: { width: 16, borderTopWidth: 1.5, borderStyle: 'dashed' },
 });

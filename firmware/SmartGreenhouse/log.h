@@ -1,5 +1,5 @@
 #pragma once
-// Tiny serial logger: "[   12.345] [fan] message". Safe to call from both tasks.
+// Tiny serial logger: "[   12.345] [sensor] message". Safe to call from both tasks.
 
 #include <Arduino.h>
 

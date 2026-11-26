@@ -11,7 +11,7 @@ interface IconTileProps {
   /** …or explicit colors (e.g. a metric color). `color` = icon, `background` = tile. */
   color?: string;
   background?: string;
-  /** Solid tile with a white icon (status card "✓", fan row). */
+  /** Solid tile with a white icon (status card "✓"). */
   solid?: boolean;
   size?: number;
   /** "circle" for big hero discs; default rounded square. */

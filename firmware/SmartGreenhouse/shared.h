@@ -1,14 +1,10 @@
 #pragma once
-// Everything the control loop (sensors + fan) and the network task share:
+// Everything the control loop (sensors) and the network task share:
 // - a snapshot of the latest values (control → network, for telemetry)
 // - a command queue (network/console → control: MQTT commands, portal settings)
 // - small request flags (publish telemetry now, open the setup portal)
 
 #include <Arduino.h>
-
-enum class FanMode : uint8_t { Auto, On, Off };
-const char* fanModeName(FanMode mode);              // "auto" | "on" | "off" (contract FanMode)
-bool parseFanMode(const char* text, FanMode& out);
 
 // Sensor error flags, sent as telemetry "errors": ["dht", ...].
 enum SensorError : uint8_t {
@@ -28,26 +24,17 @@ struct Snapshot {
   int soilMv = 0;
   bool soilPctOk = false;  // soilPct valid (needs soilRawOk + calibration)
   float soilPct = 0;
-  bool fanOn = false;
-  FanMode fanMode = FanMode::Auto;
   uint8_t errors = 0;
 };
 
 enum class CmdType : uint8_t {
-  SetFanMode,
-  SetFanThresholds,
   CalibrateSoilDry,
   CalibrateSoilWet,
-  SetNetwork,      // from the setup portal
-  SetFanActiveLow, // from the setup portal
+  SetNetwork,  // from the setup portal
 };
 
 struct Command {
   CmdType type;
-  FanMode mode = FanMode::Auto;
-  float fanOnTemp = 0;
-  float fanOffTemp = 0;
-  bool activeLow = false;
   uint16_t port = 0;
   char host[65] = {0};
   char deviceId[33] = {0};

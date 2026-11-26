@@ -1,6 +1,5 @@
 export { AreaLineChart, type ChartPoint } from './AreaLineChart';
 export { Badge } from './Badge';
-export { BarActivityChart, type ActivityBucket } from './BarActivityChart';
 export { BottomSheet } from './BottomSheet';
 export {
   Button,

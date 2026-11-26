@@ -2,7 +2,7 @@
 // firmware and obeys the same commands (see docs/api-contract.md §4).
 //
 //   npm run sim                       normal day/night simulation for gh-01
-//   npm run sim -- --hot              force high temperature (alerts, fan ON)
+//   npm run sim -- --hot              force high temperature (alerts)
 //   npm run sim -- --dry              soil dries fast, no watering (alerts)
 //   npm run sim -- --interval 2       telemetry every 2 s
 //   npm run sim -- --stall-after 30   stop telemetry after 30 s but stay connected
@@ -15,12 +15,7 @@ import { parseArgs } from 'node:util';
 import { connect } from 'mqtt';
 import { z } from 'zod';
 import { env } from '../src/config/env.js';
-import {
-  DeviceCommandSchema,
-  DeviceIdSchema,
-  type DeviceCommand,
-  type FanMode,
-} from '../src/domain/schemas.js';
+import { DeviceCommandSchema, DeviceIdSchema, type DeviceCommand } from '../src/domain/schemas.js';
 import { SimScenarioSchema, type SimScenario } from '../src/dev/scenarios.js';
 import { topics } from '../src/mqtt/topics.js';
 
@@ -114,11 +109,6 @@ const sim = {
   lux: 0,
   rssi: -58,
   cloud: 0.9,
-  fanMode: 'auto' as FanMode,
-  fanOn: false,
-  // Firmware defaults (NVS); the backend pushes its values when we come online.
-  fanOnTemp: 32,
-  fanOffTemp: 28,
   // Soil calibration reported back (like the firmware's NVS values); the
   // simulation itself uses SOIL_RAW_DRY/WET.
   soilDryMv: SOIL_RAW_DRY,
@@ -126,8 +116,8 @@ const sim = {
 };
 
 function targetAirTemp(h: number): number {
-  if (sim.hot) return 41 - (sim.fanOn ? 1.5 : 0); // the fan can't keep up
-  return outsideTemp(h) + 6 * daylight(h) * sim.cloud - (sim.fanOn ? 4 : 0);
+  if (sim.hot) return 40; // past the critical point (>= 38 °C with the default 35 °C limit)
+  return outsideTemp(h) + 6 * daylight(h) * sim.cloud;
 }
 
 // Start near equilibrium so the first readings are realistic.
@@ -137,15 +127,6 @@ function targetAirTemp(h: number): number {
   sim.airTemp = sim.hot ? 34 : targetAirTemp(h);
   sim.humidity = clamp(90 - (sim.airTemp - 16) * 2.2, 25, 98);
   sim.lux = daylight(h) * 35_000 * sim.cloud;
-  applyFanLogic();
-}
-
-/** Same hysteresis as the firmware: ON at >= fanOnTemp, OFF at <= fanOffTemp (auto). */
-function applyFanLogic(): void {
-  if (sim.fanMode === 'on') sim.fanOn = true;
-  else if (sim.fanMode === 'off') sim.fanOn = false;
-  else if (sim.airTemp >= sim.fanOnTemp) sim.fanOn = true;
-  else if (sim.airTemp <= sim.fanOffTemp) sim.fanOn = false;
 }
 
 function step(dt: number): void {
@@ -157,7 +138,7 @@ function step(dt: number): void {
   // --hot heats fast (τ = 60 s): warning (>35 °C) after ~15 s, critical (≥38 °C) after ~80 s.
   sim.airTemp = approach(sim.airTemp, targetAirTemp(h), dt, sim.hot ? 60 : 600) + noise(0.05);
 
-  const rhTarget = clamp(90 - (sim.airTemp - 16) * 2.2 - (sim.fanOn ? 6 : 0), 25, 98);
+  const rhTarget = clamp(90 - (sim.airTemp - 16) * 2.2, 25, 98);
   sim.humidity = clamp(approach(sim.humidity, rhTarget, dt, 300) + noise(0.3), 0, 100);
 
   // Soil dries faster when warm; --dry makes it ~40 %/h for quick alerts.
@@ -171,7 +152,6 @@ function step(dt: number): void {
   }
 
   sim.rssi = clamp(sim.rssi + noise(1.5), -78, -45);
-  applyFanLogic();
 }
 
 const startedAt = Date.now();
@@ -191,12 +171,7 @@ function telemetryPayload() {
     soilMoisture: round(sim.soilMoisture, 1),
     soilRaw,
     lux: round(sim.lux, 1),
-    fanOn: sim.fanOn,
-    fanMode: sim.fanMode,
     rssi: Math.round(sim.rssi),
-    // Thresholds in use: acknowledges setFanThresholds (like the firmware's NVS values).
-    fanOnTemp: sim.fanOnTemp,
-    fanOffTemp: sim.fanOffTemp,
     soilDryMv: sim.soilDryMv,
     soilWetMv: sim.soilWetMv,
   };
@@ -223,7 +198,7 @@ function publishTelemetry(reason = ''): void {
   const time = new Date().toLocaleTimeString();
   console.log(
     `${time} ${opts.device} T=${p.airTemp}°C RH=${p.humidity}% soil=${p.soilMoisture}% ` +
-      `lux=${p.lux} fan=${p.fanOn ? 'ON' : 'off'}(${p.fanMode}) on/off=${sim.fanOnTemp}/${sim.fanOffTemp}` +
+      `lux=${p.lux}` +
       (reason ? `  ← ${reason}` : ''),
   );
 }
@@ -237,39 +212,27 @@ function handleCommand(cmd: DeviceCommand): void {
     console.warn(`ignored stale ${cmd.type} (${Math.round(ageMs / 1000)} s old)`);
     return;
   }
-  if (cmd.type === 'setFanMode') {
-    sim.fanMode = cmd.mode;
-    applyFanLogic();
-    publishTelemetry(`setFanMode ${cmd.mode}`);
-  } else if (cmd.type === 'calibrateSoil') {
-    // Like the firmware: the current raw reading becomes the dry (0 %) / wet (100 %) point.
-    const raw = telemetryPayload().soilRaw;
-    if (cmd.point === 'dry') sim.soilDryMv = raw;
-    else sim.soilWetMv = raw;
-    publishTelemetry(`calibrateSoil ${cmd.point} = ${raw} mV`);
-  } else {
-    sim.fanOnTemp = cmd.fanOnTemp;
-    sim.fanOffTemp = cmd.fanOffTemp;
-    applyFanLogic();
-    publishTelemetry(`setFanThresholds ${cmd.fanOnTemp}/${cmd.fanOffTemp}`);
-  }
+  // calibrateSoil, like the firmware: the current raw reading becomes the dry (0 %) / wet (100 %) point.
+  const raw = telemetryPayload().soilRaw;
+  if (cmd.point === 'dry') sim.soilDryMv = raw;
+  else sim.soilWetMv = raw;
+  publishTelemetry(`calibrateSoil ${cmd.point} = ${raw} mV`);
 }
 
 /** Demo sheet scenarios (backend DEV_TOOLS=true → POST /api/dev/simulate → this topic). */
 function handleScenario(scenario: SimScenario): void {
   if (scenario === 'heatwave') {
     sim.hot = true;
-    sim.airTemp = Math.max(sim.airTemp, 33.1); // already past the fan-ON point, critical (>= 38) within ~30 s
+    sim.airTemp = Math.max(sim.airTemp, 33.1); // warning (> 35) soon, critical (>= 38) within ~1 min
   } else if (scenario === 'drysoil') {
     sim.dry = true;
     sim.soilMoisture = Math.min(sim.soilMoisture, 27); // below the default 30 % limit
   } else {
     sim.hot = false;
     sim.dry = false;
-    sim.airTemp = Math.min(sim.airTemp, 27); // back to comfortable (the fan switches off)
+    sim.airTemp = Math.min(sim.airTemp, 27); // back to comfortable
     sim.soilMoisture = Math.max(sim.soilMoisture, 60);
   }
-  applyFanLogic();
   publishTelemetry(`scenario ${scenario}`);
 }
 

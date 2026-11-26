@@ -2,27 +2,6 @@
 
 #include <atomic>
 
-const char* fanModeName(FanMode mode) {
-  switch (mode) {
-    case FanMode::On:
-      return "on";
-    case FanMode::Off:
-      return "off";
-    case FanMode::Auto:
-    default:
-      return "auto";
-  }
-}
-
-bool parseFanMode(const char* text, FanMode& out) {
-  if (!text) return false;
-  if (strcmp(text, "auto") == 0) out = FanMode::Auto;
-  else if (strcmp(text, "on") == 0) out = FanMode::On;
-  else if (strcmp(text, "off") == 0) out = FanMode::Off;
-  else return false;
-  return true;
-}
-
 namespace shared {
 namespace {
 portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;

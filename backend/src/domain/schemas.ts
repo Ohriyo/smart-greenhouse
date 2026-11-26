@@ -2,10 +2,6 @@ import { z } from 'zod';
 
 // ---------- Shared enums ----------
 
-export const FAN_MODES = ['auto', 'on', 'off'] as const;
-export const FanModeSchema = z.enum(FAN_MODES);
-export type FanMode = z.infer<typeof FanModeSchema>;
-
 /** Metrics that GET /history can return. */
 export const HISTORY_METRICS = [
   'airTemp',
@@ -55,8 +51,6 @@ export const TelemetrySchema = z.object({
     .nullish()
     .transform((v) => v ?? null),
   lux: sensor(0, 200_000),
-  fanOn: z.boolean(),
-  fanMode: FanModeSchema,
   rssi: z
     .number()
     .int()
@@ -70,9 +64,6 @@ export const TelemetrySchema = z.object({
   simulator: z.boolean().optional(),
   /** Seconds since the device booted (diagnostics only; not stored). */
   uptimeSec: z.number().int().min(0).optional(),
-  /** Fan thresholds the device is currently using (acknowledges setFanThresholds). */
-  fanOnTemp: z.number().min(10).max(50).optional(),
-  fanOffTemp: z.number().min(10).max(50).optional(),
   /** Soil calibration the device is using (mV in air / in water); acknowledges calibrateSoil. */
   soilDryMv: z.number().int().min(0).max(4095).optional(),
   soilWetMv: z.number().int().min(0).max(4095).optional(),
@@ -86,26 +77,10 @@ export const StatusSchema = z.enum(['online', 'offline']);
 
 // ---------- MQTT payloads (backend -> device) ----------
 
-/** Fan hysteresis limits accepted by the device (same rule as the thresholds API). */
-export const FAN_TEMP_MIN = 10;
-export const FAN_TEMP_MAX = 50;
-export const FAN_TEMP_MIN_GAP = 1;
-
 const commandBase = { id: z.string().min(1), issuedAt: z.string() };
 
 /** greenhouse/{deviceId}/command — JSON, QoS 1, not retained. */
 export const DeviceCommandSchema = z.discriminatedUnion('type', [
-  z.object({ ...commandBase, type: z.literal('setFanMode'), mode: FanModeSchema }),
-  z
-    .object({
-      ...commandBase,
-      type: z.literal('setFanThresholds'),
-      fanOnTemp: z.number().min(FAN_TEMP_MIN).max(FAN_TEMP_MAX),
-      fanOffTemp: z.number().min(FAN_TEMP_MIN).max(FAN_TEMP_MAX),
-    })
-    .refine((c) => c.fanOnTemp - c.fanOffTemp >= FAN_TEMP_MIN_GAP, {
-      message: `fanOffTemp must be at least ${FAN_TEMP_MIN_GAP} °C below fanOnTemp`,
-    }),
   z.object({ ...commandBase, type: z.literal('calibrateSoil'), point: z.enum(['dry', 'wet']) }),
 ]);
 export type DeviceCommand = z.infer<typeof DeviceCommandSchema>;
@@ -177,15 +152,8 @@ export type AlertMetric = z.infer<typeof AlertMetricSchema>;
 
 // ---------- REST request bodies / queries ----------
 
-export const FanCommandBodySchema = z.strictObject({ mode: FanModeSchema });
-
 export const HistoryQuerySchema = z.object({
   metric: HistoryMetricSchema,
-  range: HistoryRangeSchema.default('24h'),
-});
-
-/** GET /api/devices/:id/fan-activity query. */
-export const FanActivityQuerySchema = z.object({
   range: HistoryRangeSchema.default('24h'),
 });
 
@@ -236,7 +204,6 @@ export const NotificationSettingsBodySchema = z.strictObject({
 });
 export type NotificationSettingsBody = z.infer<typeof NotificationSettingsBodySchema>;
 
-const fanTemp = z.number().min(FAN_TEMP_MIN).max(FAN_TEMP_MAX);
 const limit = (min: number, max: number) => z.number().min(min).max(max).nullable();
 
 const RANGE_PAIRS = [
@@ -249,8 +216,6 @@ const RANGE_PAIRS = [
 /** PUT /api/devices/:id/thresholds — full replacement; null = no limit. */
 export const ThresholdsBodySchema = z
   .strictObject({
-    fanOnTemp: fanTemp,
-    fanOffTemp: fanTemp,
     airTempMin: limit(-40, 80),
     airTempMax: limit(-40, 80),
     humidityMin: limit(0, 100),
@@ -261,13 +226,6 @@ export const ThresholdsBodySchema = z
     luxMax: limit(0, 200_000),
   })
   .superRefine((t, ctx) => {
-    if (t.fanOnTemp - t.fanOffTemp < FAN_TEMP_MIN_GAP) {
-      ctx.addIssue({
-        code: 'custom',
-        path: ['fanOffTemp'],
-        message: `fanOffTemp must be at least ${FAN_TEMP_MIN_GAP} °C below fanOnTemp`,
-      });
-    }
     for (const [minKey, maxKey] of RANGE_PAIRS) {
       const min = t[minKey];
       const max = t[maxKey];

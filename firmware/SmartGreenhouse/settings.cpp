@@ -39,10 +39,6 @@ bool isValidDeviceId(const char* id) {
   return true;
 }
 
-bool isValidFanThresholds(float onTemp, float offTemp) {
-  return onTemp >= 10 && onTemp <= 50 && offTemp >= 10 && offTemp <= 50 && onTemp - offTemp >= 1;
-}
-
 void begin() {
   prefs.begin(NS, false);
   // Only read keys that exist: the core logs a scary "NOT_FOUND" error otherwise.
@@ -56,17 +52,8 @@ void begin() {
   s.mqttPort = has("mqttPort") ? prefs.getUShort("mqttPort") : cfg::DEFAULT_MQTT_PORT;
   if (s.mqttPort == 0) s.mqttPort = cfg::DEFAULT_MQTT_PORT;
 
-  s.fanOnTemp = has("fanOn") ? prefs.getFloat("fanOn") : cfg::DEFAULT_FAN_ON_TEMP;
-  s.fanOffTemp = has("fanOff") ? prefs.getFloat("fanOff") : cfg::DEFAULT_FAN_OFF_TEMP;
-  if (!isValidFanThresholds(s.fanOnTemp, s.fanOffTemp)) {
-    s.fanOnTemp = cfg::DEFAULT_FAN_ON_TEMP;
-    s.fanOffTemp = cfg::DEFAULT_FAN_OFF_TEMP;
-  }
   s.soilDryMv = has("soilDry") ? prefs.getUShort("soilDry") : cfg::DEFAULT_SOIL_DRY_MV;
   s.soilWetMv = has("soilWet") ? prefs.getUShort("soilWet") : cfg::DEFAULT_SOIL_WET_MV;
-  s.fanActiveLow = has("fanActLow") ? prefs.getBool("fanActLow") : cfg::DEFAULT_FAN_ACTIVE_LOW;
-  uint8_t mode = has("fanMode") ? prefs.getUChar("fanMode") : static_cast<uint8_t>(FanMode::Auto);
-  s.fanMode = mode <= static_cast<uint8_t>(FanMode::Off) ? static_cast<FanMode>(mode) : FanMode::Auto;
   update([&](Settings& c) { c = s; });
 }
 
@@ -82,10 +69,7 @@ void print() {
   Settings s = get();
   LOGF("settings", "device id      : %s", s.deviceId);
   LOGF("settings", "mqtt broker    : %s:%u", s.mqttHost, s.mqttPort);
-  LOGF("settings", "fan on / off   : %.1f / %.1f °C", s.fanOnTemp, s.fanOffTemp);
   LOGF("settings", "soil dry / wet : %u / %u mV", s.soilDryMv, s.soilWetMv);
-  LOGF("settings", "fan output     : %s", s.fanActiveLow ? "active-LOW (relay)" : "active-HIGH (MOSFET)");
-  LOGF("settings", "fan mode       : %s", fanModeName(s.fanMode));
 }
 
 bool setNetwork(const char* host, uint16_t port, const char* deviceId) {
@@ -105,18 +89,6 @@ bool setNetwork(const char* host, uint16_t port, const char* deviceId) {
 
 uint32_t networkVersion() { return netVersion; }
 
-bool setFanThresholds(float onTemp, float offTemp) {
-  if (!isValidFanThresholds(onTemp, offTemp)) return false;
-  update([&](Settings& c) {
-    c.fanOnTemp = onTemp;
-    c.fanOffTemp = offTemp;
-  });
-  prefs.putFloat("fanOn", onTemp);
-  prefs.putFloat("fanOff", offTemp);
-  LOGF("settings", "fan thresholds saved: on %.1f °C, off %.1f °C", onTemp, offTemp);
-  return true;
-}
-
 void setSoilDry(uint16_t mv) {
   update([&](Settings& c) { c.soilDryMv = mv; });
   prefs.putUShort("soilDry", mv);
@@ -134,19 +106,6 @@ bool setSoilCalibration(uint16_t dryMv, uint16_t wetMv) {
   setSoilDry(dryMv);
   setSoilWet(wetMv);
   return true;
-}
-
-void setFanActiveLow(bool activeLow) {
-  update([&](Settings& c) { c.fanActiveLow = activeLow; });
-  prefs.putBool("fanActLow", activeLow);
-  LOGF("settings", "fan output saved: %s", activeLow ? "active-LOW (relay)" : "active-HIGH (MOSFET)");
-}
-
-void setFanMode(FanMode mode) {
-  if (get().fanMode == mode) return;  // avoid needless flash writes
-  update([&](Settings& c) { c.fanMode = mode; });
-  prefs.putUChar("fanMode", static_cast<uint8_t>(mode));
-  LOGF("settings", "fan mode saved: %s", fanModeName(mode));
 }
 
 void factoryReset() {

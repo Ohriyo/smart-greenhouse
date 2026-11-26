@@ -46,7 +46,7 @@ Create the data folder once, in an **Administrator** PowerShell:
 New-Item -ItemType Directory -Force "C:\Program Files\mosquitto\data"
 ```
 
-> ⚠️ **Security trade-off.** `allow_anonymous true` on `0.0.0.0` means **any device on your Wi-Fi** can read all greenhouse data, publish fake telemetry and send fan commands. Nothing is encrypted. That's acceptable on a trusted home network during development. Never forward port 1883 on your router, and don't use this setup on public or shared Wi-Fi. To harden it later, add a password file (`password_file` + `allow_anonymous false`, created with `mosquitto_passwd`) and TLS on port 8883.
+> ⚠️ **Security trade-off.** `allow_anonymous true` on `0.0.0.0` means **any device on your Wi-Fi** can read all greenhouse data, publish fake telemetry and send commands to the board. Nothing is encrypted. That's acceptable on a trusted home network during development. Never forward port 1883 on your router, and don't use this setup on public or shared Wi-Fi. To harden it later, add a password file (`password_file` + `allow_anonymous false`, created with `mosquitto_passwd`) and TLS on port 8883.
 
 ## 3. Run it
 
@@ -94,7 +94,7 @@ To test from another machine on the LAN, use the laptop IP instead of `localhost
 > **JSON in PowerShell:** quoting JSON for native programs is fragile in Windows PowerShell 5.1. Put the payload in a file and send it with `-f`:
 >
 > ```powershell
-> '{"airTemp":27.4,"humidity":61,"soilMoisture":43,"soilRaw":2310,"lux":812,"fanOn":false,"fanMode":"auto","rssi":-61}' | Out-File -Encoding ascii telemetry.json
+> '{"airTemp":27.4,"humidity":61,"soilMoisture":43,"soilRaw":2310,"lux":812,"rssi":-61}' | Out-File -Encoding ascii telemetry.json
 > mosquitto_pub -h localhost -t "greenhouse/gh-01/telemetry" -f telemetry.json
 > ```
 

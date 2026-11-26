@@ -93,9 +93,7 @@ mqtt.on('close', () => {
 
 const ingest = createIngest({
   realtime,
-  commands,
   rules,
-  sms,
   devTools,
   listeningSince: () => listeningSince,
 });

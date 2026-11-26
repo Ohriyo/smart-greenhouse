@@ -1,9 +1,9 @@
 // Smart Greenhouse ESP32 firmware.
 //
-// loop() (core 1) = control: sensors, fan hysteresis, BOOT button, LED, serial
-// console, commands. It never waits for the network, so ventilation keeps
-// working without Wi-Fi or MQTT.
-// network task (core 0) = Wi-Fi, MQTT, NTP, setup portal (src/network.cpp).
+// loop() (core 1) = control: sensors, BOOT button, LED, serial console,
+// commands. It never waits for the network, so the sensors keep being read
+// without Wi-Fi or MQTT.
+// network task (core 0) = Wi-Fi, MQTT, NTP, setup portal (network.cpp).
 // Every job in loop() runs on its own millis() timer; nothing in it waits.
 //
 // Contract: docs/api-contract.md §4. Bring-up: docs/firmware.md.
@@ -13,7 +13,6 @@
 #include "commands.h"
 #include "config.h"
 #include "console.h"
-#include "fan.h"
 #include "log.h"
 #include "network.h"
 #include "sensors.h"
@@ -81,8 +80,6 @@ void publishSnapshot() {
     snap.soilPctOk = sensors::soilPercent(r.soilMv, s.soilDryMv, s.soilWetMv, snap.soilPct);
     if (!snap.soilPctOk) snap.errors |= ERR_SOIL_CAL;
   }
-  snap.fanOn = fan::isOn();
-  snap.fanMode = fan::mode();
   shared::setSnapshot(snap);
 }
 
@@ -90,17 +87,12 @@ void publishSnapshot() {
 
 void setup() {
   Serial.begin(115200);
+  settings::begin();
+
   delay(200);
   Serial.println(F("\n\n=== Smart Greenhouse firmware ==="));
   LOGF("boot", "chip %s rev %d, %lu MHz, flash %lu KB", ESP.getChipModel(), ESP.getChipRevision(),
        (unsigned long)ESP.getCpuFreqMHz(), (unsigned long)(ESP.getFlashChipSize() / 1024));
-
-  settings::begin();
-  // Fan first: the output must be OFF before anything else can take time.
-  fan::begin(settings::get().fanActiveLow);
-  // The output stays OFF here; the saved mode takes effect in the first loop()
-  // (Auto still needs a valid temperature before it can switch ON).
-  fan::setMode(settings::get().fanMode);
   settings::print();
 
   pinMode(cfg::PIN_BOOT, INPUT_PULLUP);
@@ -118,10 +110,6 @@ void loop() {
 
   Command c;
   while (shared::takeCommand(c)) commands::apply(c);
-
-  sensors::Readings r = sensors::get();
-  Settings s = settings::get();
-  if (fan::update(now, r.airOk, r.airTemp, s.fanOnTemp, s.fanOffTemp)) shared::requestTelemetry();
 
   publishSnapshot();
   updateButton(now);

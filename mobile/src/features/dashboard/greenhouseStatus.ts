@@ -34,7 +34,7 @@ export function greenhouseSummary(
       icon: 'cloud-offline-outline',
       title: 'Device offline',
       message: lastSeen
-        ? `No data since ${manilaTime(lastSeen)}. The fan keeps running on its own rules.`
+        ? `No data since ${manilaTime(lastSeen)}.`
         : 'The greenhouse hasn’t sent data yet.',
     };
   }
@@ -97,10 +97,10 @@ export function soilCaption(value: number | null, min: number | null, max: numbe
   return 'Optimal';
 }
 
-/** Gauge caption for air temperature: below the minimum is cool, above the fan ON point is hot. */
-export function tempCaption(value: number | null, min: number | null, fanOnTemp: number): string {
+/** Gauge caption for air temperature: below the minimum is cool, above the maximum is hot. */
+export function tempCaption(value: number | null, min: number | null, max: number | null): string {
   if (value === null) return 'No reading';
   if (min !== null && value < min) return 'Cool';
-  if (value >= fanOnTemp) return 'Hot';
+  if (max !== null && value > max) return 'Hot';
   return 'Comfortable';
 }

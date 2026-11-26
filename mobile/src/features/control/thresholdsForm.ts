@@ -3,8 +3,6 @@ import { ThresholdsUpdateSchema, type Thresholds, type ThresholdsUpdate } from '
 export type ThresholdKey = keyof ThresholdsUpdate;
 
 export const THRESHOLD_KEYS = [
-  'fanOnTemp',
-  'fanOffTemp',
   'airTempMin',
   'airTempMax',
   'humidityMin',
@@ -15,16 +13,12 @@ export const THRESHOLD_KEYS = [
   'luxMax',
 ] as const satisfies readonly ThresholdKey[];
 
-/** Text typed in each field. Empty min/max = no limit; fan fields are required. */
+/** Text typed in each field. Empty min/max = no limit. */
 export type ThresholdsForm = Record<ThresholdKey, string>;
 export type FieldErrors = Partial<Record<ThresholdKey, string>>;
 
-const REQUIRED: ReadonlySet<ThresholdKey> = new Set(['fanOnTemp', 'fanOffTemp']);
-
 /** Fields validated together: an error on one is shown once either was edited. */
 export const PARTNER: Record<ThresholdKey, ThresholdKey> = {
-  fanOnTemp: 'fanOffTemp',
-  fanOffTemp: 'fanOnTemp',
   airTempMin: 'airTempMax',
   airTempMax: 'airTempMin',
   humidityMin: 'humidityMax',
@@ -56,10 +50,10 @@ export function toForm(t: Thresholds): ThresholdsForm {
   return form;
 }
 
-/** "" → null (no limit) or NaN (required); accepts a decimal comma and "60k" for light; junk → NaN. */
+/** "" → null (no limit); accepts a decimal comma and "60k" for light; junk → NaN. */
 function parseField(key: ThresholdKey, text: string): number | null {
   let s = text.trim().replace(',', '.');
-  if (s === '') return REQUIRED.has(key) ? Number.NaN : null;
+  if (s === '') return null;
   let factor = 1;
   if (LUX_KEYS.has(key) && /k$/i.test(s)) {
     factor = 1000;

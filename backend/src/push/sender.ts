@@ -22,7 +22,7 @@ export const ALERT_TITLE = 'Greenhouse alert';
 /** The prototype's sample notification, for the Demo sheet. */
 export const DEMO_PUSH = {
   title: ALERT_TITLE,
-  body: 'Air temperature 33.1 °C — fan turned on',
+  body: 'Air temperature 36.4 °C — above the 35 °C limit',
 } as const;
 
 /** Expo recommends checking receipts ~15 min after sending (they live ~24 h). */
@@ -58,7 +58,7 @@ export interface PushSender {
   notifyAlert(alert: AlertDto): Promise<SendResult | null>;
   /**
    * Push a test notification to every registered phone (ignores preferences).
-   * `demo` = the prototype's sample alert ("Greenhouse alert" / "Air temperature 33.1 °C — fan turned on").
+   * `demo` = the prototype's sample alert ("Greenhouse alert" / "Air temperature 36.4 °C — above the 35 °C limit").
    */
   sendTest(preset?: 'demo'): Promise<SendResult>;
   /** Check pending receipts now (normally runs on a timer). */

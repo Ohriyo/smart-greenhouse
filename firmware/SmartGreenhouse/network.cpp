@@ -42,7 +42,6 @@ WiFiManagerParameter pHeader("<p>Smart Greenhouse: MQTT broker = the laptop runn
 WiFiManagerParameter pHost("mqtt_host", "MQTT broker host (laptop LAN IP)", "", 64);
 WiFiManagerParameter pPort("mqtt_port", "MQTT port", "1883", 6);
 WiFiManagerParameter pDeviceId("device_id", "Device ID (A-Z a-z 0-9 _ -)", "", 32);
-WiFiManagerParameter pActiveLow("fan_low", "Fan output: 1 = relay (active-LOW), 0 = MOSFET", "1", 2);
 
 bool portalOpen = false;
 bool wifiWasUp = false;
@@ -62,10 +61,6 @@ void onSaveParams() {
   } else {
     shared::postCommand(c);
   }
-  Command a{};
-  a.type = CmdType::SetFanActiveLow;
-  a.activeLow = strcmp(pActiveLow.getValue(), "0") != 0;
-  shared::postCommand(a);
 }
 
 void openPortal() {
@@ -75,10 +70,9 @@ void openPortal() {
   pHost.setValue(s.mqttHost, 64);
   pPort.setValue(port, 6);
   pDeviceId.setValue(s.deviceId, 32);
-  pActiveLow.setValue(s.fanActiveLow ? "1" : "0", 2);
   LOGF("portal", "setup portal OPEN: join Wi-Fi \"%s\" (password \"%s\"), open http://192.168.4.1",
        apName, cfg::PORTAL_PASSWORD);
-  LOGF("portal", "closes by itself after %lu s; the fan keeps working meanwhile",
+  LOGF("portal", "closes by itself after %lu s; the sensors keep reading meanwhile",
        (unsigned long)cfg::PORTAL_TIMEOUT_S);
   portalOpen = true;
   setState(State::Portal);
@@ -102,7 +96,7 @@ void maintainWifi(uint32_t now) {
            WiFi.localIP().toString().c_str(), WiFi.RSSI());
       configTime(0, 0, "pool.ntp.org", "time.google.com");  // UTC; non-blocking SNTP
     } else {
-      LOGF("wifi", "disconnected; reconnecting every %lu s (fan logic unaffected)",
+      LOGF("wifi", "disconnected; reconnecting every %lu s (sensor reading unaffected)",
            (unsigned long)(cfg::RECONNECT_INTERVAL_MS / 1000));
     }
   }
@@ -183,11 +177,7 @@ void publishTelemetry(uint32_t now) {
   if (snap.soilRawOk) doc["soilRaw"] = snap.soilMv;
   else doc["soilRaw"] = nullptr;
   num("lux", snap.luxOk, snap.lux, 1);
-  doc["fanOn"] = snap.fanOn;
-  doc["fanMode"] = fanModeName(snap.fanMode);
   doc["rssi"] = WiFi.RSSI();
-  doc["fanOnTemp"] = serialized(String(s.fanOnTemp, 1));
-  doc["fanOffTemp"] = serialized(String(s.fanOffTemp, 1));
   doc["soilDryMv"] = s.soilDryMv;
   doc["soilWetMv"] = s.soilWetMv;
   if (snap.errors) {
@@ -306,7 +296,6 @@ void begin() {
   wm.addParameter(&pHost);
   wm.addParameter(&pPort);
   wm.addParameter(&pDeviceId);
-  wm.addParameter(&pActiveLow);
   wm.setSaveParamsCallback(onSaveParams);
 
   mqtt.setCallback(onMessage);
@@ -314,7 +303,7 @@ void begin() {
   mqtt.setKeepAlive(15);
   mqtt.setSocketTimeout(5);
 
-  // Core 0 (with the Wi-Fi stack); loop() and the fan logic run on core 1.
+  // Core 0 (with the Wi-Fi stack); loop() and the sensor reading run on core 1.
   xTaskCreatePinnedToCore(task, "net", 10240, nullptr, 1, nullptr, 0);
 }
 

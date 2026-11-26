@@ -46,7 +46,6 @@ export function useLatestQuery(deviceId: string | undefined) {
       const live = useLiveStore.getState();
       live.upsertDevice(latest.device);
       if (latest.reading) live.setReading(latest.reading);
-      if (latest.lastFanChange) live.applyFanState(latest.lastFanChange);
       return latest;
     },
   });

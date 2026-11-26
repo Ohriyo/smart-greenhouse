@@ -3,7 +3,6 @@ import { StyleSheet, View } from 'react-native';
 
 import {
   AreaLineChart,
-  BarActivityChart,
   Card,
   HeatmapGrid,
   Skeleton,
@@ -12,10 +11,9 @@ import {
   type HeatmapRow,
 } from '@/components/ui';
 import { useTheme } from '@/theme';
-import type { AlertMetric, FanActivity, Heatmap, History, HistoryRange } from '@/types/api';
+import type { AlertMetric, Heatmap, History, HistoryRange } from '@/types/api';
 import { manilaDateTime } from '@/utils/manilaTime';
 import { formatAxis, formatMetric, formatMetricText, METRICS } from '@/utils/sensors';
-import { formatDuration, formatDurationSpoken } from '@/utils/time';
 
 import { RANGE_EYEBROW, RANGE_SPOKEN, rangeLabels } from './axis';
 
@@ -92,42 +90,6 @@ export const HistoryOverview = memo(function HistoryOverview({
         xLabels={rangeLabels(range, from, to)}
         accessibilityLabel={`${meta.label}, ${RANGE_SPOKEN[range]}: average line with the minimum to maximum range. Touch the chart for values.`}
       />
-    </Card>
-  );
-});
-
-// ---------- Fan activity ----------
-
-export const FanActivityCard = memo(function FanActivityCard({
-  range,
-  data,
-  loading,
-}: {
-  range: HistoryRange;
-  data: FanActivity | undefined;
-  loading: boolean;
-}) {
-  const buckets = useMemo(
-    () =>
-      data ? data.buckets.map((b) => ({ fraction: Math.min(1, b.onSec / data.bucketSec) })) : [],
-    [data],
-  );
-  const total = data ? formatDuration(data.totalOnSec) : '—';
-  return (
-    <Card eyebrow="Automation" title="Fan activity" meta={data ? `${total} total` : undefined}>
-      {data ? (
-        <BarActivityChart
-          buckets={buckets}
-          xLabels={rangeLabels(range, Date.parse(data.from), Date.parse(data.to))}
-          accessibilityLabel={`Fan ran ${formatDurationSpoken(data.totalOnSec)} in the ${RANGE_SPOKEN[range]}, in ${data.buckets.filter((b) => b.onSec > 0).length} of ${data.buckets.length} periods`}
-        />
-      ) : loading ? (
-        <Skeleton height={80} />
-      ) : (
-        <Text variant="caption" color="secondary">
-          Fan activity is unavailable right now.
-        </Text>
-      )}
     </Card>
   );
 });

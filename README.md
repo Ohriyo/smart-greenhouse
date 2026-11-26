@@ -1,6 +1,6 @@
 # Smart Greenhouse
 
-An ESP32 reads air temperature and humidity, light and soil moisture, and controls a 12 V fan. A Node.js backend on the laptop stores the data and raises alerts. An **Android** app is the dashboard.
+An ESP32 reads air temperature and humidity, light and soil moisture. A Node.js backend on the laptop stores the data and raises alerts. An **Android** app is the dashboard.
 
 ```
 ESP32 / simulator ──MQTT──► Mosquitto (laptop :1883) ◄──► backend (laptop :4000) ◄──REST + Socket.IO──► Android app
@@ -10,7 +10,7 @@ ESP32 / simulator ──MQTT──► Mosquitto (laptop :1883) ◄──► back
 |---|---|
 | `backend/` | Node.js + TypeScript: MQTT ingest, rules engine, REST, Socket.IO, dev simulator |
 | `mobile/` | Expo (React Native) Android app |
-| `firmware/` | ESP32 firmware (PlatformIO): see [docs/firmware.md](docs/firmware.md) |
+| `firmware/` | ESP32 firmware, Arduino IDE sketch `firmware/SmartGreenhouse/` (+ test sketches in `firmware/bringup/`): see [docs/firmware.md](docs/firmware.md) |
 | `docs/` | [API contract](docs/api-contract.md) (single source of truth), [Mosquitto setup](docs/setup-mosquitto.md), [Push notifications setup](docs/setup-push.md), [SMS alerts setup](docs/setup-sms.md) |
 
 ## Prerequisites
@@ -94,9 +94,9 @@ For presenting the app. A dark **Demo** pill at the top right of every screen op
 
 | Control | What it does |
 |---|---|
-| Simulate heat wave / dry soil / back to normal | Drives the **simulator** through the backend, so the app shows a real alert, fan change and push |
+| Simulate heat wave / dry soil / back to normal | Drives the **simulator** through the backend, so the app shows a real alert and push |
 | Device offline, Server unreachable, Pause live updates, Dark mode | Overrides **only what this app shows**: they reset when the app restarts |
-| Trigger push notification | The prototype's sample alert, "Greenhouse alert / Air temperature 33.1 °C — fan turned on". Tapping it opens the Alerts tab. Without a push-registered phone (Expo Go) the same notification is shown locally after 5 s |
+| Trigger push notification | The prototype's sample alert, "Greenhouse alert / Air temperature 36.4 °C — above the 35 °C limit". Tapping it opens the Alerts tab. Without a push-registered phone (Expo Go) the same notification is shown locally after 5 s |
 
 **To use the scenarios:**
 1. In `backend/.env` set `DEV_TOOLS=true` and restart the backend (default is `false`: then the scenario endpoints don't exist).

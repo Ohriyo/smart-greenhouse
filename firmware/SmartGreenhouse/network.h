@@ -1,7 +1,7 @@
 #pragma once
 // Wi-Fi, MQTT, NTP and the WiFiManager setup portal, in their own FreeRTOS task
 // (core 0). PubSubClient's connect() blocks for seconds when the broker is down;
-// running here means that can never delay the fan logic in loop() (core 1).
+// running here means that can never delay the sensor reading in loop() (core 1).
 
 #include <Arduino.h>
 

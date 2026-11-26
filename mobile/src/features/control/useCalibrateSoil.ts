@@ -2,11 +2,19 @@ import { useMutation } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 
 import { useToast } from '@/components/ui';
-import { api } from '@/services/api';
+import { api, describeError, HttpError } from '@/services/api';
 import { useLiveStore } from '@/store/liveStore';
 import type { SoilPoint } from '@/types/api';
 
-import { sendErrorMessage } from './useSetFanMode';
+/** Why a command to the greenhouse could not be sent. */
+function sendErrorMessage(err: unknown): string {
+  if (err instanceof HttpError) {
+    if (err.code === 'DEVICE_OFFLINE')
+      return 'The greenhouse is offline. Try again when it is back.';
+    if (err.status === 503) return 'The server is not connected to the MQTT broker.';
+  }
+  return describeError(err);
+}
 
 /** How long we wait for the greenhouse to report its new calibration. */
 export const CALIBRATION_CONFIRM_TIMEOUT_MS = 10_000;

@@ -79,29 +79,6 @@ export async function setPresence(
   };
 }
 
-/**
- * Records the fan thresholds the device reports using. Returns the updated
- * device only when the values changed (so callers emit device:status once).
- */
-export async function updateReportedFanThresholds(
-  device: Device,
-  fanOnTemp: number,
-  fanOffTemp: number,
-  at: Date,
-): Promise<Device | null> {
-  if (device.reportedFanOnTemp === fanOnTemp && device.reportedFanOffTemp === fanOffTemp) {
-    return null;
-  }
-  return prisma.device.update({
-    where: { id: device.id },
-    data: {
-      reportedFanOnTemp: fanOnTemp,
-      reportedFanOffTemp: fanOffTemp,
-      reportedFanThresholdsAt: at,
-    },
-  });
-}
-
 /** Renames a device. The id (MQTT topic) never changes. */
 export function renameDevice(id: string, name: string): Promise<Device> {
   return prisma.device.update({ where: { id }, data: { name } });

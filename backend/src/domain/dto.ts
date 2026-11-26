@@ -1,12 +1,10 @@
-import type { Alert, Device, FanEvent, Reading, Thresholds } from '../generated/prisma/client.js';
+import type { Alert, Device, Reading, Thresholds } from '../generated/prisma/client.js';
 import {
   AlertMetricSchema,
   AlertTypeSchema,
-  FanModeSchema,
   SeveritySchema,
   type AlertMetric,
   type AlertType,
-  type FanMode,
   type Severity,
 } from './schemas.js';
 
@@ -19,10 +17,6 @@ export interface DeviceDto {
   lastSeen: string | null;
   createdAt: string;
   telemetryIntervalSec: number | null;
-  /** Fan thresholds the device last reported using; null if it never reported them. */
-  reportedFanOnTemp: number | null;
-  reportedFanOffTemp: number | null;
-  reportedFanThresholdsAt: string | null;
   /** Latest Wi-Fi signal (dBm) the device reported; null if never. */
   rssi: number | null;
   /** Seconds since boot as reported at `uptimeAt` (uptime now ≈ uptimeSec + (now − uptimeAt)). */
@@ -56,23 +50,11 @@ export interface ReadingDto {
   soilMoisture: number | null;
   soilRaw: number | null;
   lux: number | null;
-  fanOn: boolean;
-  fanMode: FanMode;
   rssi: number | null;
-}
-
-export interface FanStateDto {
-  deviceId: string;
-  ts: string;
-  fanOn: boolean;
-  fanMode: FanMode;
-  airTemp: number | null;
 }
 
 export interface ThresholdsDto {
   deviceId: string;
-  fanOnTemp: number;
-  fanOffTemp: number;
   airTempMin: number | null;
   airTempMax: number | null;
   humidityMin: number | null;
@@ -92,9 +74,6 @@ export function toDeviceDto(d: Device): DeviceDto {
     lastSeen: d.lastSeen?.toISOString() ?? null,
     createdAt: d.createdAt.toISOString(),
     telemetryIntervalSec: d.telemetryIntervalSec,
-    reportedFanOnTemp: d.reportedFanOnTemp,
-    reportedFanOffTemp: d.reportedFanOffTemp,
-    reportedFanThresholdsAt: d.reportedFanThresholdsAt?.toISOString() ?? null,
     rssi: d.rssi,
     uptimeSec: d.uptimeSec,
     uptimeAt: d.uptimeAt?.toISOString() ?? null,
@@ -128,27 +107,13 @@ export function toReadingDto(r: Reading): ReadingDto {
     soilMoisture: r.soilMoisture,
     soilRaw: r.soilRaw,
     lux: r.lux,
-    fanOn: r.fanOn,
-    fanMode: FanModeSchema.parse(r.fanMode),
     rssi: r.rssi,
-  };
-}
-
-export function toFanStateDto(e: FanEvent): FanStateDto {
-  return {
-    deviceId: e.deviceId,
-    ts: e.ts.toISOString(),
-    fanOn: e.fanOn,
-    fanMode: FanModeSchema.parse(e.fanMode),
-    airTemp: e.airTemp,
   };
 }
 
 export function toThresholdsDto(t: Thresholds): ThresholdsDto {
   return {
     deviceId: t.deviceId,
-    fanOnTemp: t.fanOnTemp,
-    fanOffTemp: t.fanOffTemp,
     airTempMin: t.airTempMin,
     airTempMax: t.airTempMax,
     humidityMin: t.humidityMin,

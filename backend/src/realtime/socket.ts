@@ -1,6 +1,6 @@
 import type { Server as HttpServer } from 'node:http';
 import { Server } from 'socket.io';
-import type { AlertDto, DeviceDto, FanStateDto, ReadingDto } from '../domain/dto.js';
+import type { AlertDto, DeviceDto, ReadingDto } from '../domain/dto.js';
 import { createLogger } from '../lib/logger.js';
 
 const log = createLogger('socket');
@@ -9,7 +9,6 @@ const log = createLogger('socket');
 export interface ServerToClientEvents {
   telemetry: (reading: ReadingDto) => void;
   'device:status': (device: DeviceDto) => void;
-  'fan:state': (state: FanStateDto) => void;
   alert: (alert: AlertDto) => void;
 }
 
@@ -19,7 +18,6 @@ export type ClientToServerEvents = Record<string, never>;
 export interface Realtime {
   emitTelemetry(reading: ReadingDto): void;
   emitDeviceStatus(device: DeviceDto): void;
-  emitFanState(state: FanStateDto): void;
   emitAlert(alert: AlertDto): void;
   close(): Promise<void>;
 }
@@ -39,7 +37,6 @@ export function createRealtime(httpServer: HttpServer): Realtime {
   return {
     emitTelemetry: (reading) => io.emit('telemetry', reading),
     emitDeviceStatus: (device) => io.emit('device:status', device),
-    emitFanState: (state) => io.emit('fan:state', state),
     emitAlert: (alert) => io.emit('alert', alert),
     close: () =>
       new Promise((resolve) => {

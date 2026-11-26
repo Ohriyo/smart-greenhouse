@@ -39,7 +39,7 @@ export function createQueryClient(): QueryClient {
           (!(error instanceof ApiError) || error.kind === 'network' || error.kind === 'timeout'),
       },
       mutations: {
-        // Never queue commands while offline: a fan command sent minutes later
+        // Never queue commands while offline: a command sent minutes later
         // would surprise you. Fail at once and show the error instead.
         networkMode: 'always',
       },

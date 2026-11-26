@@ -61,6 +61,10 @@ void readDht(uint32_t now) {
   if (isnan(t) || isnan(h) || t < -40 || t > 80 || h < 0 || h > 100) {
     // One bad read happens; keep the last value for a couple of reads before reporting null.
     if (dhtMisses < 255) dhtMisses++;
+    if (dhtMisses <= cfg::DHT_MAX_MISSES) {
+      LOGF("sensor", "DHT22 read failed (NaN or out of range), keeping last value (%u/%u)", dhtMisses,
+           cfg::DHT_MAX_MISSES);
+    }
     if (dhtMisses > cfg::DHT_MAX_MISSES) {
       r.airOk = false;
       setError(ERR_DHT, true, "DHT22 not answering (check GPIO27, 3.3 V, pull-up)");

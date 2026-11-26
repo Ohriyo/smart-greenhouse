@@ -23,7 +23,7 @@
     "sms:check": "tsx scripts/sms-check.ts",
     "sim": "tsx scripts/simulator.ts",
     "seed:history": "tsx scripts/seed-history.ts",
-    "test": "tsx --test \"src/**/*.test.ts\"",
+    "test": "tsx --test --test-concurrency=1 \"src/**/*.test.ts\"",
     "postinstall": "prisma generate"
   },
   "dependencies": {

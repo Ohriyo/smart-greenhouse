@@ -6,7 +6,9 @@ dist/
 
 # Secrets / local config (each folder commits a .env.example instead)
 .env
-.env*.local
+.env.*
+!.env.example
+!.env.test.example
 
 # SQLite databases (backend/dev.db etc.)
 *.db
@@ -14,9 +16,9 @@ dist/
 *.db-wal
 *.db-shm
 
-# PlatformIO (firmware)
+# Firmware: Wi-Fi password, backend URL and device key (secrets.example.h is committed)
+firmware/SmartGreenhouse/secrets.h
 firmware/.pio/
-firmware/include/secrets.h
 
 # Editors / OS / logs
 .vscode/

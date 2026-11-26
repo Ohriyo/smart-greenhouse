@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { Router } from 'express';
 import { toDeviceDto, toReadingDto, toThresholdsDto } from '../../domain/dto.js';
 import {
@@ -8,10 +9,11 @@ import {
   RecentQuerySchema,
   SoilCalibrationBodySchema,
   ThresholdsBodySchema,
+  type DeviceCommand,
 } from '../../domain/schemas.js';
-import type { CommandSender } from '../../mqtt/commands.js';
-import { getDeviceOr404, listDevices, renameDevice } from '../../services/devices.js';
+import type { PendingCommands } from '../../ingest/commands.js';
 import type { Realtime } from '../../realtime/socket.js';
+import { getDeviceOr404, listDevices, renameDevice } from '../../services/devices.js';
 import { getHeatmap } from '../../services/heatmap.js';
 import { getHistory } from '../../services/history.js';
 import { getRecentReadings } from '../../services/recent.js';
@@ -25,7 +27,7 @@ function deviceIdParam(raw: string | undefined): string {
   return parsed.data;
 }
 
-export function devicesRouter(commands: CommandSender, getRealtime: () => Realtime | null): Router {
+export function devicesRouter(commands: PendingCommands, realtime: Realtime): Router {
   const router = Router();
 
   router.get('/', async (_req, res) => {
@@ -33,13 +35,12 @@ export function devicesRouter(commands: CommandSender, getRealtime: () => Realti
     res.json(devices.map(toDeviceDto));
   });
 
-  // Rename (the app's Settings → Device). Other connected phones get device:status.
+  // Rename (the app's Settings → Device). Other connected apps get device:status.
   router.patch('/:id', async (req, res) => {
     const device = await getDeviceOr404(deviceIdParam(req.params.id));
     const { name } = DeviceRenameBodySchema.parse(req.body);
-    const updated = await renameDevice(device.id, name);
-    const dto = toDeviceDto(updated);
-    getRealtime()?.emitDeviceStatus(dto);
+    const dto = toDeviceDto(await renameDevice(device.id, name));
+    realtime.emitDeviceStatus(dto);
     res.json(dto);
   });
 
@@ -95,15 +96,22 @@ export function devicesRouter(commands: CommandSender, getRealtime: () => Realti
   });
 
   // The device stores its *current* soil reading as 0 % (dry: sensor in air) or
-  // 100 % (wet: sensor in water). Acknowledged by soilDryMv/soilWetMv in telemetry.
+  // 100 % (wet: sensor in water). The command goes out in the response to its next
+  // reading; the new soilDryMv/soilWetMv in a later reading acknowledge it.
   router.post('/:id/soil-calibration', async (req, res) => {
     const device = await getDeviceOr404(deviceIdParam(req.params.id));
     const { point } = SoilCalibrationBodySchema.parse(req.body);
     if (!device.online) {
       throw new ApiError(409, 'DEVICE_OFFLINE', `Device "${device.id}" is offline`);
     }
-    const commandId = await commands.sendSoilCalibration(device.id, point);
-    res.status(202).json({ commandId, deviceId: device.id, point, status: 'sent' });
+    const command: DeviceCommand = {
+      id: randomUUID(),
+      type: 'calibrateSoil',
+      point,
+      issuedAt: new Date().toISOString(),
+    };
+    commands.enqueue(device.id, command);
+    res.status(202).json({ commandId: command.id, deviceId: device.id, point, status: 'queued' });
   });
 
   return router;

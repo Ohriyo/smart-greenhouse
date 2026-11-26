@@ -79,7 +79,7 @@ export async function setPresence(
   };
 }
 
-/** Renames a device. The id (MQTT topic) never changes. */
+/** Renames a device. The id (the deviceId the ESP32 sends) never changes. */
 export function renameDevice(id: string, name: string): Promise<Device> {
   return prisma.device.update({ where: { id }, data: { name } });
 }
@@ -98,7 +98,23 @@ export async function getDeviceOr404(id: string): Promise<Device> {
   return device;
 }
 
-/** Extra slack on top of 3 intervals for network/broker jitter. */
+/**
+ * The device a single-greenhouse endpoint (/api/readings/latest, /api/stats, …)
+ * refers to: `requested` if given (404 if unknown), otherwise `defaultId` if it
+ * exists, otherwise the first device by id. null = no device has reported yet.
+ */
+export async function resolveDevice(
+  requested: string | undefined,
+  defaultId: string,
+): Promise<Device | null> {
+  if (requested !== undefined) return getDeviceOr404(requested);
+  return (
+    (await prisma.device.findUnique({ where: { id: defaultId } })) ??
+    (await prisma.device.findFirst({ orderBy: { id: 'asc' } }))
+  );
+}
+
+/** Extra slack on top of 3 intervals for network jitter. */
 const OFFLINE_GRACE_MS = 2_000;
 
 /** How long a device may stay silent before it is considered offline. */
@@ -109,10 +125,10 @@ export function offlineAfterMs(device: Device, fallbackSec: number): number {
 }
 
 /**
- * Marks online devices offline when silent for 3 telemetry intervals (or
+ * Marks online devices offline when silent for 3 reading intervals (or
  * `fallbackSec` if the interval is unknown). Silence is only counted since
- * `listeningSince` (last MQTT connect): while the backend was down or the broker
- * unreachable it could not have received anything. Returns the devices that flipped.
+ * `listeningSince` (the backend's start): while the backend was down (or asleep
+ * on Render) it could not have received anything. Returns the devices that flipped.
  */
 export async function markStaleDevicesOffline(
   now: Date,

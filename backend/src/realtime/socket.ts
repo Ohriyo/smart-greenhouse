@@ -19,27 +19,46 @@ export interface Realtime {
   emitTelemetry(reading: ReadingDto): void;
   emitDeviceStatus(device: DeviceDto): void;
   emitAlert(alert: AlertDto): void;
+  /**
+   * Starts Socket.IO on the HTTP server. Before this, emits are no-ops (the app
+   * is created before the server it runs on).
+   */
+  attach(httpServer: HttpServer, isAllowedOrigin: (origin: string) => boolean): void;
+  /** Closes Socket.IO and the HTTP server it is attached to. */
   close(): Promise<void>;
 }
 
-export function createRealtime(httpServer: HttpServer): Realtime {
-  const io = new Server<ClientToServerEvents, ServerToClientEvents>(httpServer, {
-    serveClient: false,
-  });
-
-  io.on('connection', (socket) => {
-    log.info(`client connected ${socket.id} (${socket.handshake.address})`);
-    socket.on('disconnect', (reason) => {
-      log.info(`client disconnected ${socket.id}: ${reason}`);
-    });
-  });
+export function createRealtime(): Realtime {
+  let io: Server<ClientToServerEvents, ServerToClientEvents> | null = null;
 
   return {
-    emitTelemetry: (reading) => io.emit('telemetry', reading),
-    emitDeviceStatus: (device) => io.emit('device:status', device),
-    emitAlert: (alert) => io.emit('alert', alert),
+    attach(httpServer, isAllowedOrigin) {
+      io = new Server<ClientToServerEvents, ServerToClientEvents>(httpServer, {
+        serveClient: false,
+        // Browser clients (the Vercel web app) are checked like REST calls;
+        // the Android app sends no Origin header.
+        cors: {
+          origin: (origin, callback) => {
+            callback(null, origin === undefined || isAllowedOrigin(origin));
+          },
+        },
+      });
+      io.on('connection', (socket) => {
+        log.info(`client connected ${socket.id}`);
+        socket.on('disconnect', (reason) => {
+          log.info(`client disconnected ${socket.id}: ${reason}`);
+        });
+      });
+    },
+    emitTelemetry: (reading) => io?.emit('telemetry', reading),
+    emitDeviceStatus: (device) => io?.emit('device:status', device),
+    emitAlert: (alert) => io?.emit('alert', alert),
     close: () =>
       new Promise((resolve) => {
+        if (!io) {
+          resolve();
+          return;
+        }
         void io.close(() => {
           resolve();
         });

@@ -11,14 +11,17 @@ interface SweeperDeps {
   realtime: Realtime;
   rules: RulesEngine;
   fallbackSec: number;
-  /** Time of the current MQTT connection, or null while the broker is unreachable. */
+  /**
+   * Since when the backend could have received readings (its start time): after
+   * a restart (e.g. a Render cold start) devices get a full window to report
+   * before they are marked offline. null pauses the sweep.
+   */
   listeningSince: () => Date | null;
 }
 
 /**
- * Backup for the MQTT Last Will: marks a device offline after 3 missed telemetry
- * intervals (or `fallbackSec` when the interval is unknown). Paused while the
- * broker is unreachable. Returns a stop function.
+ * Marks a device offline after 3 missed reading intervals (or `fallbackSec` when
+ * the interval is unknown). Returns a stop function.
  */
 export function startPresenceSweeper(deps: SweeperDeps): () => void {
   const { realtime, rules, fallbackSec, listeningSince } = deps;
@@ -26,7 +29,7 @@ export function startPresenceSweeper(deps: SweeperDeps): () => void {
 
   const sweep = async () => {
     const since = listeningSince();
-    if (!since) return; // can't observe devices without the broker
+    if (!since) return; // paused
     const stale = await markStaleDevicesOffline(new Date(), fallbackSec, since);
     for (const device of stale) {
       const silentSec = Math.round(offlineAfterMs(device, fallbackSec) / 1000);

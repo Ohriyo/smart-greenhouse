@@ -1,9 +1,18 @@
 import { prisma } from '../db.js';
 import type { Reading } from '../generated/prisma/client.js';
-import type { Telemetry } from '../domain/schemas.js';
 
 const MAX_FUTURE_SKEW_MS = 60_000;
 const MAX_PAST_SKEW_MS = 24 * 60 * 60 * 1000;
+
+/** The stored part of a reading (null = sensor failed or not reported). */
+export interface SensorValues {
+  airTemp: number | null;
+  humidity: number | null;
+  soilMoisture: number | null;
+  soilRaw: number | null;
+  lux: number | null;
+  rssi: number | null;
+}
 
 /**
  * Use the device timestamp only when it is plausible (ESP32 without NTP sync
@@ -16,17 +25,17 @@ export function pickTimestamp(deviceTs: number | undefined, receivedAt: Date): D
   return new Date(deviceTs);
 }
 
-export function saveReading(deviceId: string, t: Telemetry, ts: Date): Promise<Reading> {
+export function saveReading(deviceId: string, v: SensorValues, ts: Date): Promise<Reading> {
   return prisma.reading.create({
     data: {
       deviceId,
       ts,
-      airTemp: t.airTemp,
-      humidity: t.humidity,
-      soilMoisture: t.soilMoisture,
-      soilRaw: t.soilRaw,
-      lux: t.lux,
-      rssi: t.rssi,
+      airTemp: v.airTemp,
+      humidity: v.humidity,
+      soilMoisture: v.soilMoisture,
+      soilRaw: v.soilRaw,
+      lux: v.lux,
+      rssi: v.rssi,
     },
   });
 }

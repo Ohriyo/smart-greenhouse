@@ -4,9 +4,9 @@ import { createLogger } from '../lib/logger.js';
 const log = createLogger('retention');
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-/** Rows per DELETE: short transactions, so MQTT ingest isn't blocked for long. */
+/** Rows per DELETE: short transactions, so reading ingest isn't blocked for long. */
 const BATCH_SIZE = 5_000;
-const FIRST_RUN_DELAY_MS = 60_000; // let startup (retained replay, sweeps) settle first
+const FIRST_RUN_DELAY_MS = 60_000; // let startup settle first
 
 /**
  * Deletes raw readings older than `days` (in batches). Alerts and thresholds

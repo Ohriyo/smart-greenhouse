@@ -1,45 +1,49 @@
-// Dev-only ESP32 simulator. Publishes on the same MQTT topics as the real
-// firmware and obeys the same commands (see docs/api-contract.md §4).
+// Dev-only ESP32 simulator. Sends readings exactly like the firmware
+// (POST /api/readings with the X-Device-Key header, docs/api-contract.md §4) and
+// applies the commands that come back in the response: soil calibration, and the
+// scenarios of the app's dev-only Demo sheet (backend DEV_TOOLS=true).
 //
-//   npm run sim                       normal day/night simulation for gh-01
-//   npm run sim -- --hot              force high temperature (alerts)
-//   npm run sim -- --dry              soil dries fast, no watering (alerts)
-//   npm run sim -- --interval 2       telemetry every 2 s
-//   npm run sim -- --stall-after 30   stop telemetry after 30 s but stay connected
-//   npm run sim -- --crash            Ctrl+C = power cut (broker sends the Last Will)
-//   npm run sim -- --device gh-02 --url mqtt://192.168.1.50:1883
+//   npm run sim                          gh-01 → http://localhost:4000, every 30 s
+//   npm run sim -- --interval 5          a reading every 5 s (snappier demos)
+//   npm run sim -- --hot                 force high temperature (alerts)
+//   npm run sim -- --dry                 soil dries fast, no watering (alerts)
+//   npm run sim -- --stall-after 60      stop sending after 60 s (offline test)
+//   npm run sim -- --url https://<your-service>.onrender.com --device gh-02
 //
-// While it runs it also listens on greenhouse/<id>/sim for scenarios sent by the
-// app's dev-only Demo sheet (backend DEV_TOOLS=true): heatwave | drysoil | normal.
+// The device key is DEVICE_API_KEY from backend/.env, or --key.
+import { existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
-import { connect } from 'mqtt';
 import { z } from 'zod';
-import { env } from '../src/config/env.js';
 import { DeviceCommandSchema, DeviceIdSchema, type DeviceCommand } from '../src/domain/schemas.js';
-import { SimScenarioSchema, type SimScenario } from '../src/dev/scenarios.js';
-import { topics } from '../src/mqtt/topics.js';
+import type { SimScenario } from '../src/dev/scenarios.js';
+
+// backend/.env for the defaults (without the backend's full config: the
+// simulator needs no database and may target a remote backend).
+const envFile = fileURLToPath(new URL('../.env', import.meta.url));
+if (existsSync(envFile)) process.loadEnvFile(envFile);
 
 // ---------- CLI ----------
 
 const HELP = `Usage: npm run sim -- [options]
   --device <id>        device id (default gh-01)
-  --interval <sec>     telemetry interval, 1-3600 (default 5)
+  --interval <sec>     seconds between readings, 1-3600 (default 30, like the firmware)
   --hot                force high temperature
   --dry                fast-drying soil, no watering
-  --stall-after <sec>  stop publishing telemetry after <sec>, stay connected
-  --crash              on Ctrl+C drop the connection without goodbye (Last Will fires)
-  --url <mqtt-url>     broker (default MQTT_URL from .env)
+  --stall-after <sec>  stop sending after <sec> (the backend marks it offline)
+  --url <base-url>     backend (default http://localhost:<PORT from .env or 4000>)
+  --key <key>          device key (default DEVICE_API_KEY from backend/.env)
   -h, --help`;
 
 const { values: raw } = parseArgs({
   options: {
     device: { type: 'string', default: 'gh-01' },
-    interval: { type: 'string', default: '5' },
+    interval: { type: 'string', default: '30' },
     hot: { type: 'boolean', default: false },
     dry: { type: 'boolean', default: false },
     'stall-after': { type: 'string' },
-    crash: { type: 'boolean', default: false },
     url: { type: 'string' },
+    key: { type: 'string' },
     help: { type: 'boolean', short: 'h', default: false },
   },
 });
@@ -55,8 +59,10 @@ const OptionsSchema = z.object({
   hot: z.boolean(),
   dry: z.boolean(),
   stallAfter: z.coerce.number().positive().optional(),
-  crash: z.boolean(),
-  url: z.string().regex(/^mqtts?:\/\//),
+  url: z
+    .url({ protocol: /^https?$/ })
+    .transform((u) => u.replace(/\/+$/, '')),
+  key: z.string({ error: 'missing: set DEVICE_API_KEY in backend/.env or pass --key' }).min(1),
 });
 
 const parsedOpts = OptionsSchema.safeParse({
@@ -65,8 +71,8 @@ const parsedOpts = OptionsSchema.safeParse({
   hot: raw.hot,
   dry: raw.dry,
   stallAfter: raw['stall-after'],
-  crash: raw.crash,
-  url: raw.url ?? env.MQTT_URL,
+  url: raw.url ?? `http://localhost:${process.env.PORT ?? '4000'}`,
+  key: raw.key ?? process.env.DEVICE_API_KEY,
 });
 if (!parsedOpts.success) {
   console.error(`Invalid options:\n${z.prettifyError(parsedOpts.error)}\n\n${HELP}`);
@@ -135,7 +141,7 @@ function step(dt: number): void {
   sim.lux =
     daylight(h) > 0 ? daylight(h) * 35_000 * sim.cloud * (1 + noise(0.02)) : Math.random() * 3;
 
-  // --hot heats fast (τ = 60 s): warning (>35 °C) after ~15 s, critical (≥38 °C) after ~80 s.
+  // --hot heats fast (τ = 60 s): above the 35 °C limit within a reading or two.
   sim.airTemp = approach(sim.airTemp, targetAirTemp(h), dt, sim.hot ? 60 : 600) + noise(0.05);
 
   const rhTarget = clamp(90 - (sim.airTemp - 16) * 2.2, 25, 98);
@@ -156,17 +162,18 @@ function step(dt: number): void {
 
 const startedAt = Date.now();
 
-function telemetryPayload() {
+function readingBody() {
   const soilRaw = Math.round(
     SOIL_RAW_DRY - (sim.soilMoisture / 100) * (SOIL_RAW_DRY - SOIL_RAW_WET) + noise(8),
   );
   return {
+    deviceId: opts.device,
     ts: Date.now(),
     intervalSec: opts.interval,
     uptimeSec: Math.round((Date.now() - startedAt) / 1000),
     // Dev-only marker: lets the backend's Demo tools tell this from real hardware.
     simulator: true,
-    airTemp: round(sim.airTemp, 1),
+    temperature: round(sim.airTemp, 1),
     humidity: round(sim.humidity, 1),
     soilMoisture: round(sim.soilMoisture, 1),
     soilRaw,
@@ -177,53 +184,80 @@ function telemetryPayload() {
   };
 }
 
-// ---------- MQTT ----------
+// ---------- HTTP ----------
 
-const statusTopic = topics.status(opts.device);
-const client = connect(opts.url, {
-  clientId: `sim-${opts.device}`,
-  clean: true,
-  keepalive: 15,
-  reconnectPeriod: 2000,
-  will: { topic: statusTopic, payload: Buffer.from('offline'), qos: 1, retain: true },
-});
+/** A sleeping Render service holds the first request while it starts (~1 min). */
+const REQUEST_TIMEOUT_MS = 75_000;
+/** Same rule as the firmware: commands older than this are ignored. */
+const MAX_COMMAND_AGE_MS = 150_000;
+
+const ResponseSchema = z.object({ commands: z.array(z.unknown()).default([]) });
 
 let stalled = false;
-let timer: NodeJS.Timeout | undefined;
+let stopping = false;
 
-function publishTelemetry(reason = ''): void {
-  if (stalled || !client.connected) return;
-  const p = telemetryPayload();
-  client.publish(topics.telemetry(opts.device), JSON.stringify(p), { qos: 0 });
+async function sendReading(reason = ''): Promise<void> {
+  if (stalled || stopping) return;
+  const body = readingBody();
+  let res: Response;
+  try {
+    res = await fetch(`${opts.url}/api/readings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Device-Key': opts.key },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
+  } catch (err) {
+    console.error(`cannot reach ${opts.url}: ${err instanceof Error ? err.message : String(err)}`);
+    return;
+  }
+  if (res.status === 401) {
+    console.error('401: the backend rejected the device key (DEVICE_API_KEY / --key)');
+    return;
+  }
+  if (!res.ok) {
+    console.error(`HTTP ${res.status}: ${(await res.text()).slice(0, 300)}`);
+    return;
+  }
   const time = new Date().toLocaleTimeString();
   console.log(
-    `${time} ${opts.device} T=${p.airTemp}°C RH=${p.humidity}% soil=${p.soilMoisture}% ` +
-      `lux=${p.lux}` +
+    `${time} ${opts.device} T=${body.temperature}°C RH=${body.humidity}% soil=${body.soilMoisture}% ` +
+      `lux=${body.lux}` +
       (reason ? `  ← ${reason}` : ''),
   );
+  const parsed = ResponseSchema.safeParse(await res.json().catch(() => null));
+  if (!parsed.success) return;
+  for (const raw of parsed.data.commands) {
+    const cmd = DeviceCommandSchema.safeParse(raw);
+    if (cmd.success) await handleCommand(cmd.data);
+    else console.warn(`ignored invalid command: ${JSON.stringify(raw).slice(0, 120)}`);
+  }
 }
 
-/** Commands delivered late (queued during a broker outage) are ignored (contract §4). */
-const MAX_COMMAND_AGE_MS = 30_000;
-
-function handleCommand(cmd: DeviceCommand): void {
+async function handleCommand(cmd: DeviceCommand): Promise<void> {
   const ageMs = Date.now() - Date.parse(cmd.issuedAt);
   if (ageMs > MAX_COMMAND_AGE_MS) {
     console.warn(`ignored stale ${cmd.type} (${Math.round(ageMs / 1000)} s old)`);
     return;
   }
-  // calibrateSoil, like the firmware: the current raw reading becomes the dry (0 %) / wet (100 %) point.
-  const raw = telemetryPayload().soilRaw;
-  if (cmd.point === 'dry') sim.soilDryMv = raw;
-  else sim.soilWetMv = raw;
-  publishTelemetry(`calibrateSoil ${cmd.point} = ${raw} mV`);
+  if (cmd.type === 'calibrateSoil') {
+    // Like the firmware: the current raw reading becomes the dry (0 %) / wet (100 %) point.
+    const raw = readingBody().soilRaw;
+    if (cmd.point === 'dry') sim.soilDryMv = raw;
+    else sim.soilWetMv = raw;
+    // Report right away so the app confirms quickly.
+    await sendReading(`calibrateSoil ${cmd.point} = ${raw} mV`);
+    return;
+  }
+  applyScenario(cmd.scenario);
+  await sendReading(`scenario ${cmd.scenario}`);
 }
 
-/** Demo sheet scenarios (backend DEV_TOOLS=true → POST /api/dev/simulate → this topic). */
-function handleScenario(scenario: SimScenario): void {
+/** Demo sheet scenarios (backend DEV_TOOLS=true → POST /api/dev/simulate). */
+function applyScenario(scenario: SimScenario): void {
   if (scenario === 'heatwave') {
     sim.hot = true;
-    sim.airTemp = Math.max(sim.airTemp, 33.1); // warning (> 35) soon, critical (>= 38) within ~1 min
+    sim.airTemp = Math.max(sim.airTemp, 35.5); // above the default 35 °C limit at once
   } else if (scenario === 'drysoil') {
     sim.dry = true;
     sim.soilMoisture = Math.min(sim.soilMoisture, 27); // below the default 30 % limit
@@ -233,77 +267,36 @@ function handleScenario(scenario: SimScenario): void {
     sim.airTemp = Math.min(sim.airTemp, 27); // back to comfortable
     sim.soilMoisture = Math.max(sim.soilMoisture, 60);
   }
-  publishTelemetry(`scenario ${scenario}`);
 }
 
-client.on('connect', () => {
-  console.log(`connected to ${opts.url} as ${opts.device} (interval ${opts.interval}s)`);
-  client.publish(statusTopic, 'online', { qos: 1, retain: true });
-  client.subscribe(topics.command(opts.device), { qos: 1 });
-  client.subscribe(topics.sim(opts.device), { qos: 1 });
-  publishTelemetry('connected');
-  timer ??= setInterval(() => {
+/** One reading per interval; the next is scheduled after the previous finished. Ctrl+C ends it. */
+async function loop(): Promise<void> {
+  await sendReading('start');
+  for (;;) {
+    await new Promise((resolve) => setTimeout(resolve, opts.interval * 1000));
     step(opts.interval);
-    publishTelemetry();
-  }, opts.interval * 1000);
-});
-
-client.on('message', (topic, payload) => {
-  let json: unknown;
-  try {
-    json = JSON.parse(payload.toString('utf8'));
-  } catch {
-    json = undefined;
+    await sendReading();
   }
-  if (topic === topics.sim(opts.device)) {
-    const scenario = SimScenarioSchema.safeParse(json);
-    if (scenario.success) handleScenario(scenario.data.scenario);
-    else console.warn(`rejected scenario: ${payload.toString('utf8').slice(0, 120)}`);
-    return;
-  }
-  const cmd = DeviceCommandSchema.safeParse(json);
-  if (!cmd.success) {
-    console.warn(`rejected command: ${payload.toString('utf8').slice(0, 120)}`);
-    return;
-  }
-  handleCommand(cmd.data);
-});
-
-client.on('reconnect', () => {
-  console.log('reconnecting…');
-});
-client.on('error', (err) => {
-  console.error(`mqtt error: ${err.message}`);
-});
+}
 
 if (opts.stallAfter !== undefined) {
   setTimeout(() => {
     stalled = true;
     console.log(
-      `⏸  stalled: no more telemetry (still connected). Backend should mark offline after ~${3 * opts.interval + 2}s.`,
+      `⏸  stalled: no more readings. The backend marks ${opts.device} offline after ~${3 * opts.interval + 2} s.`,
     );
   }, opts.stallAfter * 1000);
 }
 
-let stopping = false;
 process.on('SIGINT', () => {
   if (stopping) process.exit(1);
   stopping = true;
-  clearInterval(timer);
-  if (opts.crash) {
-    console.log(
-      '💥 crash: dropping the connection without goodbye → broker publishes the Last Will',
-    );
-    client.end(true, () => process.exit(0));
-    return;
-  }
-  console.log('stopping: publishing retained "offline" and disconnecting');
-  client.publish(statusTopic, 'offline', { qos: 1, retain: true }, () => {
-    client.end(false, () => process.exit(0));
-  });
+  console.log('stopped (the backend marks the device offline after 3 missed readings)');
+  process.exit(0);
 });
 
 console.log(
-  `simulator ${opts.device}: ${sim.hot ? 'HOT ' : ''}${sim.dry ? 'DRY ' : ''}— Ctrl+C to stop` +
-    (opts.crash ? ' (crash mode)' : ''),
+  `simulator ${opts.device} → ${opts.url} every ${opts.interval} s ` +
+    `${sim.hot ? 'HOT ' : ''}${sim.dry ? 'DRY ' : ''}— Ctrl+C to stop`,
 );
+void loop();

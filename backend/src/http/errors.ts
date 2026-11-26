@@ -8,12 +8,13 @@ export type ErrorCode =
   | 'VALIDATION_ERROR'
   | 'INVALID_JSON'
   | 'BAD_REQUEST'
+  | 'UNAUTHORIZED'
   | 'NOT_FOUND'
   | 'DEVICE_OFFLINE'
-  | 'BROKER_UNAVAILABLE'
   | 'SMS_NOT_CONFIGURED'
   | 'NOT_SIMULATED'
   | 'RATE_LIMITED'
+  | 'NOT_CONFIGURED'
   | 'INTERNAL_ERROR';
 
 export interface ErrorDetail {

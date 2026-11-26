@@ -3,14 +3,15 @@ import { networkInterfaces } from 'node:os';
 import { Expo } from 'expo-server-sdk';
 import { env } from './config/env.js';
 import { prisma } from './db.js';
+import { createDevTools } from './dev/devTools.js';
 import { createApp } from './http/app.js';
+import { isAllowedOrigin } from './http/cors.js';
+import { createPendingCommands } from './ingest/commands.js';
+import { createIngest } from './ingest/ingest.js';
 import { createLogger } from './lib/logger.js';
-import { connectMqtt } from './mqtt/client.js';
-import { createCommandSender } from './mqtt/commands.js';
-import { createIngest } from './mqtt/ingest.js';
-import { createRealtime, type Realtime } from './realtime/socket.js';
-import { createRulesEngine } from './rules/engine.js';
 import { createPushSender } from './push/sender.js';
+import { createRealtime } from './realtime/socket.js';
+import { createRulesEngine } from './rules/engine.js';
 import {
   deletePushTokens,
   getNotificationSettings,
@@ -18,13 +19,13 @@ import {
 } from './services/notifications.js';
 import { startPresenceSweeper } from './services/presence.js';
 import { startRetentionJob } from './services/retention.js';
-import { createDevTools } from './dev/devTools.js';
 import { createSmsNotifier } from './sms/notifier.js';
 import { createSmsProvider } from './sms/provider.js';
 import { createPrismaSmsStore } from './sms/store.js';
 import { startSmsSweeper } from './sms/sweeper.js';
 
 const log = createLogger('main');
+const startedAt = new Date();
 
 function lanAddresses(): string[] {
   return Object.values(networkInterfaces())
@@ -33,9 +34,10 @@ function lanAddresses(): string[] {
     .map((a) => a?.address ?? '');
 }
 
-const mqtt = connectMqtt(env.MQTT_URL);
-const commands = createCommandSender(mqtt);
-// Expo Push Service → FCM → phone. Needs internet on the laptop.
+const realtime = createRealtime();
+const commands = createPendingCommands();
+
+// Expo Push Service → FCM → phone.
 const push = createPushSender({
   client: new Expo(env.EXPO_ACCESS_TOKEN ? { accessToken: env.EXPO_ACCESS_TOKEN } : {}),
   store: {
@@ -45,8 +47,8 @@ const push = createPushSender({
   },
   enabled: env.PUSH_ENABLED,
 });
-let realtimeRef: Realtime | null = null;
-// SMS to the owner (critical readings, greenhouse offline). Test mode logs instead of sending.
+
+// SMS to the owner. Test mode logs instead of sending.
 const smsProvider = createSmsProvider(env);
 const sms = createSmsNotifier({
   store: createPrismaSmsStore(),
@@ -60,61 +62,53 @@ log.info(
 );
 
 // Dev-only Demo tools (DEV_TOOLS=true): scenarios for the simulator.
-const devTools = createDevTools({
-  enabled: env.DEV_TOOLS,
-  publish: async (topic, payload) => {
-    await mqtt.publishAsync(topic, payload, { qos: 1 });
-  },
-});
+const devTools = createDevTools({ enabled: env.DEV_TOOLS, commands });
 if (env.DEV_TOOLS) log.warn('DEV_TOOLS=true: demo scenario endpoints are enabled (/api/dev)');
 
-const server = createServer(
-  createApp({ commands, push, sms, devTools, getRealtime: () => realtimeRef }),
-);
-const realtime = createRealtime(server);
-realtimeRef = realtime;
 const rules = createRulesEngine({
   realtime,
   cooldownMs: env.ALERT_COOLDOWN_MIN * 60_000,
   onAlert: (alert) => {
     void push.notifyAlert(alert);
-    void sms.onAlert(alert); // never throws; critical readings only
+    void sms.onAlert(alert); // never throws
   },
 });
-// Offline timeouts (and trusting retained "offline") only count time during
-// which we were actually connected to the broker.
-let listeningSince: Date | null = null;
-mqtt.on('connect', () => {
-  listeningSince = new Date();
-});
-mqtt.on('close', () => {
-  listeningSince = null;
-});
 
-const ingest = createIngest({
-  realtime,
-  rules,
-  devTools,
-  listeningSince: () => listeningSince,
-});
+const ingest = createIngest({ realtime, rules, devTools, commands });
 
-mqtt.on('message', (topic, payload, packet) => {
-  ingest.handleMessage(topic, payload, packet.retain);
-});
+const server = createServer(
+  createApp({
+    ingest,
+    commands,
+    push,
+    sms,
+    devTools,
+    realtime,
+    config: {
+      deviceApiKey: env.DEVICE_API_KEY,
+      corsOrigins: env.CORS_ORIGIN,
+      defaultDeviceId: env.DEFAULT_DEVICE_ID,
+    },
+  }),
+);
+realtime.attach(server, (origin) => isAllowedOrigin(origin, env.CORS_ORIGIN));
 
 const stopRetention = startRetentionJob(env.READINGS_RETENTION_DAYS);
 const stopSmsSweeper = startSmsSweeper(sms);
-
+// Devices get a full reporting window after every start (e.g. a Render cold start).
 const stopSweeper = startPresenceSweeper({
   realtime,
   rules,
   fallbackSec: env.OFFLINE_AFTER_SEC,
-  listeningSince: () => listeningSince,
+  listeningSince: () => startedAt,
 });
 
 server.listen(env.PORT, '0.0.0.0', () => {
-  log.info(`HTTP + Socket.IO listening on port ${env.PORT}`);
-  for (const ip of lanAddresses()) log.info(`  LAN: http://${ip}:${env.PORT}`);
+  log.info(`HTTP + Socket.IO listening on port ${env.PORT} (${env.NODE_ENV})`);
+  if (env.CORS_ORIGIN.length) log.info(`CORS origins: ${env.CORS_ORIGIN.join(', ')} + localhost`);
+  if (env.NODE_ENV !== 'production') {
+    for (const ip of lanAddresses()) log.info(`  LAN: http://${ip}:${env.PORT}`);
+  }
 });
 
 let shuttingDown = false;
@@ -127,7 +121,7 @@ async function shutdown(signal: string): Promise<void> {
   stopSmsSweeper();
   push.stop();
   await realtime.close(); // also closes the HTTP server
-  await mqtt.endAsync();
+  await ingest.idle(); // finish alerts/SMS for readings already accepted
   await prisma.$disconnect();
   process.exit(0);
 }

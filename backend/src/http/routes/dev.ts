@@ -18,7 +18,7 @@ export function devRouter(devTools: DevTools): Router {
     res.json({ enabled: true, simulated: devTools.simulatedDevices() });
   });
 
-  router.post('/simulate', async (req, res) => {
+  router.post('/simulate', (req, res) => {
     const { deviceId, scenario } = SimulateBodySchema.parse(req.body);
     if (!devTools.simulatedDevices().includes(deviceId)) {
       throw new ApiError(
@@ -27,8 +27,8 @@ export function devRouter(devTools: DevTools): Router {
         `"${deviceId}" is not a running simulator. Scenarios only work with the simulator (npm run sim in backend/); the real greenhouse is never changed.`,
       );
     }
-    await devTools.simulate(deviceId, scenario);
-    res.status(202).json({ deviceId, scenario, status: 'sent' });
+    devTools.simulate(deviceId, scenario);
+    res.status(202).json({ deviceId, scenario, status: 'queued' });
   });
 
   return router;

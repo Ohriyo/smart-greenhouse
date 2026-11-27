@@ -1,5 +1,6 @@
-// Smart Greenhouse data model (SQLite).
+// Smart Greenhouse data model (PostgreSQL: Neon in production, a local server for tests).
 // String fields documented as enums are validated with Zod in the app layer.
+// All timestamps are `timestamptz` (stored in UTC).
 // NOTE: there is no soil temperature sensor — never add soil temperature fields.
 
 generator client {
@@ -9,60 +10,55 @@ generator client {
 }
 
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
 }
 
 model Device {
-  id        String    @id // from the MQTT topic: greenhouse/{deviceId}/...
+  id        String    @id // "gh-01": deviceId in POST /api/readings (default DEFAULT_DEVICE_ID)
   name      String
   online    Boolean   @default(false)
-  lastSeen  DateTime?
-  createdAt DateTime  @default(now())
-  /// Telemetry interval the device reports (seconds); drives the "3 missed intervals" offline rule.
+  lastSeen  DateTime? @db.Timestamptz(3)
+  createdAt DateTime  @default(now()) @db.Timestamptz(3)
+  /// Reading interval the device reports (seconds); drives the "3 missed intervals" offline rule.
   telemetryIntervalSec Int?
-  /// Fan thresholds the device reports it is actually using (from telemetry).
-  /// Compared with Thresholds to show whether the device applied a change.
-  reportedFanOnTemp       Float?
-  reportedFanOffTemp      Float?
-  reportedFanThresholdsAt DateTime?
   /// Latest Wi-Fi signal the device reported (dBm).
   rssi       Int?
   /// Seconds since the device booted, as reported at `uptimeAt`
   /// (boot time = uptimeAt − uptimeSec; a drop means it rebooted).
   uptimeSec  Int?
-  uptimeAt   DateTime?
+  uptimeAt   DateTime? @db.Timestamptz(3)
   /// Soil calibration the device reports using (mV in air = 0 %, in water = 100 %).
   soilDryMv  Int?
   soilWetMv  Int?
+  /// How the latest reading arrived: "mqtt" (through the broker) or "https" (POST /api/readings,
+  /// the ESP32's fallback). null = no reading yet.
+  transport  String?
 
   readings   Reading[]
   thresholds Thresholds?
   alerts     Alert[]
-  fanEvents  FanEvent[]
 }
 
 model Reading {
   id           Int      @id @default(autoincrement())
   deviceId     String
-  ts           DateTime
+  /// When the reading was taken (the device clock if plausible, else the time it arrived).
+  ts           DateTime @db.Timestamptz(3)
   airTemp      Float? // °C (DHT22)
   humidity     Float? // %RH (DHT22)
   soilMoisture Float? // % after dry/wet calibration
-  soilRaw      Int? // raw ADC 0..4095
+  soilRaw      Int? // sensor output in mV
   lux          Float? // BH1750
-  fanOn        Boolean
-  fanMode      String // "auto" | "on" | "off"
   rssi         Int? // dBm
 
   device Device @relation(fields: [deviceId], references: [id], onDelete: Cascade)
 
   @@index([deviceId, ts])
+  @@index([ts]) // retention job and time-range scans
 }
 
 model Thresholds {
   deviceId        String   @id
-  fanOnTemp       Float    @default(32)
-  fanOffTemp      Float    @default(28)
   airTempMin      Float?   @default(15)
   airTempMax      Float?   @default(35)
   humidityMin     Float?   @default(40)
@@ -71,7 +67,7 @@ model Thresholds {
   soilMoistureMax Float?   @default(80)
   luxMin          Float?
   luxMax          Float?
-  updatedAt       DateTime @updatedAt
+  updatedAt       DateTime @updatedAt @db.Timestamptz(3)
 
   device Device @relation(fields: [deviceId], references: [id], onDelete: Cascade)
 }
@@ -79,35 +75,22 @@ model Thresholds {
 model Alert {
   id       Int       @id @default(autoincrement())
   deviceId String
-  ts       DateTime
+  ts       DateTime  @db.Timestamptz(3)
   type     String // "above_max" | "below_min" | "recovered" | "offline" | "online"
   severity String // "info" | "warning" | "critical"
   metric   String? // "airTemp" | "humidity" | "soilMoisture" | "lux" (threshold alerts only)
   value    Float?
-  /// The limit that was crossed (breach alerts only; null for recovered/offline/online
-  /// and for alerts created before this column existed). Exposed as `limit` in the API.
+  /// The limit that was crossed (breach alerts only; null for recovered/offline/online).
+  /// Exposed as `limit` in the API.
   limitValue Float?
   message  String
-  readAt   DateTime?
+  readAt   DateTime? @db.Timestamptz(3)
 
   device Device @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  sms    SmsAlert[]
 
   @@index([deviceId, ts])
   @@index([deviceId, metric])
-}
-
-// A confirmed change of fan state, detected from telemetry.
-model FanEvent {
-  id       Int      @id @default(autoincrement())
-  deviceId String
-  ts       DateTime
-  fanOn    Boolean
-  fanMode  String // "auto" | "on" | "off"
-  airTemp  Float? // air temperature at the moment of the change
-
-  device Device @relation(fields: [deviceId], references: [id], onDelete: Cascade)
-
-  @@index([deviceId, ts])
 }
 
 // Expo push token of a phone that wants closed-app alerts (expo-notifications).
@@ -115,9 +98,9 @@ model PushToken {
   id        Int      @id @default(autoincrement())
   token     String   @unique // "ExponentPushToken[...]"
   platform  String   @default("android")
-  createdAt DateTime @default(now())
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
   /// Last time the app (re)registered this token.
-  updatedAt DateTime @updatedAt
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
 }
 
 // Single-user app: one row (id = 1) holds the push notification preferences.
@@ -125,51 +108,39 @@ model NotificationSettings {
   id          Int      @id @default(1)
   enabled     Boolean  @default(true)
   minSeverity String   @default("warning") // "info" | "warning" | "critical"
-  updatedAt   DateTime @updatedAt
+  updatedAt   DateTime @updatedAt @db.Timestamptz(3)
 }
 
-// Single-user app: one row (id = 1) holds the owner's SMS alert preferences.
-// The SMS provider's credentials are NOT here: they live in .env (secrets).
-model SmsSettings {
-  id              Int      @id @default(1)
-  enabled         Boolean  @default(false)
-  /// Owner's number in international format (+639171234567); null until entered.
-  phone           String?
-  /// Send the "greenhouse offline" SMS after this many minutes without data.
-  offlineAfterMin Int      @default(10)
-  updatedAt       DateTime @updatedAt
-}
+/// Every SMS attempt: sent, failed, skipped (cooldown / daily cap) or dry run.
+/// The recipients and the owner settings live in the environment (ALERT_PHONE_NUMBERS,
+/// SMS_DRY_RUN, ...), never here; numbers are stored masked.
+model SmsAlert {
+  id        Int      @id @default(autoincrement())
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  /// "threshold" | "recovery" | "offline" | "online" | "test"
+  kind      String
+  deviceId  String?
+  /// The in-app alert this SMS belongs to (null for tests and unannounced crossings).
+  alertId   Int?
+  /// "airTemp" | "humidity" | "soilMoisture" | "lux"; null for offline/online/test.
+  sensor    String?
+  /// "HIGH" | "LOW" | "NORMAL" | "OFFLINE" | "ONLINE" | "TEST"
+  condition String
+  value     Float?
+  /// The limit that was crossed (HIGH/LOW only).
+  threshold Float?
+  /// The SMS text (ASCII, ≤ 160 characters).
+  message   String
+  /// Masked recipients ("091••••4567"), comma-separated.
+  recipients String
+  /// "sent" | "failed" | "skipped_cooldown" | "skipped_daily_cap" | "dry_run"
+  status    String
+  /// Provider answer or error (API key removed, numbers masked), or why it was skipped.
+  providerResponse String?
 
-/// One row per SMS we tried to send: daily cap, "last SMS" in the app, test throttling.
-model SmsLog {
-  id         Int      @id @default(autoincrement())
-  ts         DateTime @default(now())
-  /// "critical" | "offline" | "closing" | "test"
-  kind       String
-  deviceId   String?
-  metric     String?
-  /// The text (never contains the phone number or any credential).
-  body       String
-  /// "sent" | "failed" | "skipped"
-  status     String
-  /// Why it failed or was skipped.
-  error      String?
-  providerId String?
+  alert Alert? @relation(fields: [alertId], references: [id], onDelete: SetNull)
 
-  @@index([ts])
-}
-
-/// A situation announced by SMS and not yet closed (so it is announced once, and
-/// the "back to normal" SMS follows). Only created after the opening SMS was sent.
-model SmsEpisode {
-  id          Int       @id @default(autoincrement())
-  deviceId    String
-  /// "airTemp" | "humidity" | "soilMoisture" | "lux" | "offline"
-  metric      String
-  openedAt    DateTime  @default(now())
-  /// Air temperature is back in range but the fan still runs: waiting for it to switch off.
-  recoveredAt DateTime?
-  closedAt    DateTime?
-
-  @@index([deviceId, metric, closedAt])
+  @@index([createdAt])
+  @@index([deviceId, condition, createdAt])
+  @@index([alertId])
 }

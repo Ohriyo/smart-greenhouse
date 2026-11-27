@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
 
-import { DeviceSchema, ReadingSchema, type Device, type FanState, type Reading } from '@/types/api';
+import { DeviceSchema, ReadingSchema, type Device, type Reading } from '@/types/api';
 
 /**
  * Socket.IO connection state:
@@ -18,8 +18,17 @@ export type SocketStatus =
   'idle' | 'connecting' | 'connected' | 'reconnecting' | 'error' | 'paused';
 
 /**
+ * The 10 s poll of the newest reading (src/features/dashboard/queries.ts), which
+ * keeps the data current even when the socket can't connect:
+ * - idle: no poll finished yet (or the app was in the background)
+ * - ok: the last poll succeeded
+ * - error: the last poll failed (server unreachable or too slow)
+ */
+export type PollStatus = 'idle' | 'ok' | 'error';
+
+/**
  * How much a device's values can be trusted right now:
- * - live: received in this session over a working connection
+ * - live: received in this session over a working connection (socket or poll)
  * - offline: the backend says the device is offline
  * - stale: last known values (restored after a restart, or no connection)
  */
@@ -38,10 +47,9 @@ interface LiveState {
   readings: Record<string, Reading>;
   /** When the app received data for a device in *this* session (ms, phone clock). Not persisted. */
   lastUpdated: Record<string, number>;
-  /** When the fan state (on/off or mode) last changed per device (ms, device time). */
-  fanChangedAt: Record<string, number>;
   socket: SocketStatus;
   socketError: string | null;
+  poll: PollStatus;
   /** True once the saved data has been read from storage. */
   hydrated: boolean;
 
@@ -50,8 +58,8 @@ interface LiveState {
   setDevices: (devices: Device[]) => void;
   upsertDevice: (device: Device) => void;
   setReading: (reading: Reading) => void;
-  applyFanState: (state: FanState) => void;
   setSocket: (status: SocketStatus, error?: string | null) => void;
+  setPoll: (status: PollStatus) => void;
 }
 
 const emptyData = {
@@ -59,7 +67,6 @@ const emptyData = {
   deviceIds: [],
   readings: {},
   lastUpdated: {},
-  fanChangedAt: {},
 };
 
 /** What is saved, validated when read back (storage is external input). */
@@ -68,7 +75,6 @@ const PersistedSchema = z.object({
   devices: z.record(z.string(), DeviceSchema),
   deviceIds: z.array(z.string()),
   readings: z.record(z.string(), ReadingSchema),
-  fanChangedAt: z.record(z.string(), z.number()),
 });
 
 export const useLiveStore = create<LiveState>()(
@@ -78,6 +84,7 @@ export const useLiveStore = create<LiveState>()(
       ...emptyData,
       socket: 'idle',
       socketError: null,
+      poll: 'idle',
       hydrated: false,
 
       switchServer: (url) =>
@@ -110,26 +117,9 @@ export const useLiveStore = create<LiveState>()(
           };
         }),
 
-      applyFanState: (fan) =>
-        set((s) => {
-          const changedAt = Date.parse(fan.ts);
-          const prevChange = s.fanChangedAt[fan.deviceId];
-          const fanChangedAt =
-            prevChange === undefined || changedAt > prevChange
-              ? { ...s.fanChangedAt, [fan.deviceId]: changedAt }
-              : s.fanChangedAt;
-          const current = s.readings[fan.deviceId];
-          if (!current || Date.parse(current.ts) > changedAt) return { fanChangedAt };
-          return {
-            fanChangedAt,
-            readings: {
-              ...s.readings,
-              [fan.deviceId]: { ...current, fanOn: fan.fanOn, fanMode: fan.fanMode },
-            },
-          };
-        }),
-
       setSocket: (status, error = null) => set({ socket: status, socketError: error }),
+
+      setPoll: (poll) => set((s) => (s.poll === poll ? s : { poll })),
     }),
     {
       name: 'live',
@@ -140,7 +130,6 @@ export const useLiveStore = create<LiveState>()(
         devices: s.devices,
         deviceIds: s.deviceIds,
         readings: s.readings,
-        fanChangedAt: s.fanChangedAt,
       }),
       merge: (persisted, current) => {
         const parsed = PersistedSchema.safeParse(persisted);
@@ -160,7 +149,8 @@ export const useLiveStore = create<LiveState>()(
 export function selectLiveness(s: LiveState, deviceId: string): Liveness {
   const updated = s.lastUpdated[deviceId];
   const offline = s.devices[deviceId]?.online === false;
-  if (s.socket === 'connected') {
+  // A working link: socket events, or the 10 s poll of the newest reading.
+  if (s.socket === 'connected' || s.poll === 'ok') {
     if (offline) return 'offline';
     return updated === undefined ? 'stale' : 'live';
   }

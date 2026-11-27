@@ -43,7 +43,9 @@ export const CalibrationCard = memo(function CalibrationCard({ deviceId }: { dev
     >
       <Text variant="caption" color="secondary">
         Hold the probe in the air for the dry value, then put it in a glass of water up to the line
-        (not above) for the wet value. Capture each when the reading is steady.
+        (not above) for the wet value. Capture each when the reading is steady: the greenhouse saves
+        it within seconds (up to 30 s on its HTTPS fallback), so keep the probe still until it
+        confirms.
       </Text>
 
       <View style={styles.rows}>

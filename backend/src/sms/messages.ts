@@ -1,27 +1,25 @@
-import type { AlertMetric, FanMode } from '../domain/schemas.js';
+import type { AlertMetric } from '../domain/schemas.js';
 import { MANILA_OFFSET_MS } from '../services/manila.js';
 
 /**
- * SMS texts. Rules that keep every alert at ONE message (and so one credit):
+ * SMS texts, e.g. "[Greenhouse] Soil moisture LOW: 18% (min 30%) at 14:32".
+ *
+ * Rules that keep every alert to ONE message (one credit):
  * - plain ASCII only: characters outside the GSM alphabet (the degree sign, curly
- *   quotes, dashes, emoji) switch the whole message to a mode that fits only 70 characters
+ *   quotes, dashes, emoji) switch the whole SMS to a mode that fits only 70 characters
  * - at most 160 characters
- * Units are written "C", "%" and "lux" for the same reason.
+ * - never starts with "TEST" (Semaphore silently drops those)
+ * Times are Asia/Manila (UTC+8).
  */
 export const SMS_MAX_CHARS = 160;
+export const SMS_PREFIX = '[Greenhouse]';
 
 const LABEL: Record<AlertMetric, { name: string; unit: string; decimals: number }> = {
-  airTemp: { name: 'Air temp', unit: ' C', decimals: 1 },
-  humidity: { name: 'Humidity', unit: ' %', decimals: 1 },
-  soilMoisture: { name: 'Soil moisture', unit: ' %', decimals: 1 },
+  airTemp: { name: 'Air temp', unit: 'C', decimals: 1 },
+  humidity: { name: 'Humidity', unit: '%', decimals: 1 },
+  soilMoisture: { name: 'Soil moisture', unit: '%', decimals: 1 },
   lux: { name: 'Light', unit: ' lux', decimals: 0 },
 };
-
-/** The fan as the device last confirmed it (never assumed). */
-export interface FanInfo {
-  on: boolean;
-  mode: FanMode;
-}
 
 /** Plain ASCII: accents are dropped ("Serre Sud"), anything else becomes "?". */
 export function asciiOnly(text: string): string {
@@ -39,10 +37,15 @@ export function smsName(name: string): string {
   return clean.length > 20 ? `${clean.slice(0, 19)}.` : clean;
 }
 
-/** "38.4 C", "95 %", "90000 lux"; trailing ".0" dropped. */
+/** "38.4C", "95%", "90000 lux"; trailing ".0" dropped. */
 export function formatSmsValue(metric: AlertMetric, value: number): string {
   const { unit, decimals } = LABEL[metric];
   return `${String(Number(value.toFixed(decimals)))}${unit}`;
+}
+
+/** "HH:MM" in Asia/Manila (UTC+8, no daylight saving). */
+export function manilaClock(ts: number): string {
+  return new Date(ts + MANILA_OFFSET_MS).toISOString().slice(11, 16);
 }
 
 /** Last line of defence: never exceed one SMS. */
@@ -50,64 +53,28 @@ function fit(text: string): string {
   return text.length <= SMS_MAX_CHARS ? text : `${text.slice(0, SMS_MAX_CHARS - 3)}...`;
 }
 
-function fanSentence(fan: FanInfo | null): string {
-  if (!fan) return 'Fan state unknown.';
-  if (fan.on) return `Fan ON (${fan.mode === 'auto' ? 'auto' : 'manual'}).`;
-  // OFF while it is too hot: either held off by hand, or something is wrong.
-  return fan.mode === 'off'
-    ? 'Fan is OFF (manual). Turn it on in the app!'
-    : 'Fan is OFF but should be running. Check it!';
-}
-
-interface CriticalInput {
+/** "[Greenhouse] Soil moisture LOW: 18% (min 30%) at 14:32" */
+export function thresholdMessage(i: {
   metric: AlertMetric;
-  type: 'above_max' | 'below_min';
+  condition: 'HIGH' | 'LOW';
   value: number;
   limit: number | null;
-  name: string;
-  /** Needed for air temperature too hot; ignored otherwise. */
-  fan: FanInfo | null;
-}
-
-/** "ETanim CRITICAL: Air temp 38.4 C (max 35). Fan ON (auto). Greenhouse 01" */
-export function criticalMessage(i: CriticalInput): string {
-  const side = i.type === 'above_max' ? 'max' : 'min';
-  const limit =
-    i.limit === null ? '' : ` (${side} ${formatSmsValue(i.metric, i.limit).replace(/ .*/, '')})`;
-  const head = `ETanim CRITICAL: ${LABEL[i.metric].name} ${formatSmsValue(i.metric, i.value)}${limit}.`;
-  let tail = '';
-  if (i.metric === 'airTemp')
-    tail = i.type === 'above_max' ? ` ${fanSentence(i.fan)}` : ' Too cold.';
-  return fit(`${head}${tail} ${smsName(i.name)}`);
-}
-
-/** Air temperature settled and the fan switched OFF by itself. */
-export function stabilizedMessage(i: { value: number | null; name: string }): string {
-  const v = i.value === null ? '' : ` to ${formatSmsValue('airTemp', i.value)}`;
-  return fit(`ETanim OK: Air temp back${v || ' to normal'}. Fan turned OFF. ${smsName(i.name)}`);
-}
-
-/** Air temperature is back in range but the fan is still running (manual, or it took too long). */
-export function airTempBackMessage(i: {
-  value: number | null;
-  name: string;
-  fan: FanInfo | null;
+  at: number;
 }): string {
-  const v = i.value === null ? 'normal' : formatSmsValue('airTemp', i.value);
-  const fan = i.fan?.on
-    ? `Fan still ON (${i.fan.mode === 'auto' ? 'auto' : 'manual'}).`
-    : 'Fan is OFF.';
-  return fit(`ETanim OK: Air temp back to ${v}. ${fan} ${smsName(i.name)}`);
+  const side = i.condition === 'HIGH' ? 'max' : 'min';
+  const limit = i.limit === null ? '' : ` (${side} ${formatSmsValue(i.metric, i.limit)})`;
+  return fit(
+    `${SMS_PREFIX} ${LABEL[i.metric].name} ${i.condition}: ${formatSmsValue(i.metric, i.value)}` +
+      `${limit} at ${manilaClock(i.at)}`,
+  );
 }
 
-/** Humidity, soil or light back inside its limits. */
-export function backInRangeMessage(i: {
-  metric: AlertMetric;
-  value: number | null;
-  name: string;
-}): string {
-  const v = i.value === null ? '' : `: ${formatSmsValue(i.metric, i.value)}`;
-  return fit(`ETanim OK: ${LABEL[i.metric].name} back in range${v}. ${smsName(i.name)}`);
+/** "[Greenhouse] Soil moisture back to normal: 35% at 15:02" */
+export function recoveryMessage(i: { metric: AlertMetric; value: number; at: number }): string {
+  return fit(
+    `${SMS_PREFIX} ${LABEL[i.metric].name} back to normal: ${formatSmsValue(i.metric, i.value)} ` +
+      `at ${manilaClock(i.at)}`,
+  );
 }
 
 /** "1 h 5 min" / "12 min". */
@@ -118,21 +85,20 @@ function duration(minutes: number): string {
   return m % 60 === 0 ? `${h} h` : `${h} h ${m % 60} min`;
 }
 
-/** "HH:MM" in Asia/Manila (UTC+8, no daylight saving). */
-export function manilaClock(ts: number): string {
-  return new Date(ts + MANILA_OFFSET_MS).toISOString().slice(11, 16);
-}
-
+/** "[Greenhouse] gh-01 OFFLINE: no data for 12 min (last seen 14:05)" */
 export function offlineMessage(i: { name: string; minutes: number; lastSeen: number }): string {
   return fit(
-    `ETanim ALERT: ${smsName(i.name)} offline for ${duration(i.minutes)} (last seen ${manilaClock(i.lastSeen)}). The fan keeps running on its own.`,
+    `${SMS_PREFIX} ${smsName(i.name)} OFFLINE: no data for ${duration(i.minutes)} ` +
+      `(last seen ${manilaClock(i.lastSeen)})`,
   );
 }
 
-export function backOnlineMessage(i: { name: string }): string {
-  return fit(`ETanim OK: ${smsName(i.name)} is back online.`);
+/** "[Greenhouse] gh-01 back ONLINE at 14:20" */
+export function onlineMessage(i: { name: string; at: number }): string {
+  return fit(`${SMS_PREFIX} ${smsName(i.name)} back ONLINE at ${manilaClock(i.at)}`);
 }
 
-export function testMessage(): string {
-  return 'ETanim test: SMS alerts are working.';
+/** "[Greenhouse] Test message: SMS alerts are working (14:32)" */
+export function testMessage(at: number): string {
+  return `${SMS_PREFIX} Test message: SMS alerts are working (${manilaClock(at)})`;
 }

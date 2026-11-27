@@ -7,7 +7,6 @@ import {
   AreaLineChart,
   Button,
   Card,
-  Divider,
   Eyebrow,
   IconButton,
   IconTile,
@@ -97,14 +96,6 @@ function SensorDetail({ metric }: { metric: AlertMetric }) {
   );
   const domain = useMemo(() => [now - RECENT_WINDOW_MS, now] as const, [now]);
   const hasChart = chartPoints.some((p) => p.v !== null);
-  // Stable object: a new one every render would defeat the chart's memo and re-compute its geometry.
-  const fanOnTemp = thresholds?.fanOnTemp ?? null;
-  const airTempColor = colors.chart.airTemp;
-  const fanLine = useMemo(
-    () =>
-      metric === 'airTemp' && fanOnTemp !== null ? { value: fanOnTemp, color: airTempColor } : null,
-    [metric, fanOnTemp, airTempColor],
-  );
   const today = useMemo(() => todayStats(history.data?.points ?? [], now), [history.data, now]);
   const fmt = (v: number) => formatMetricText(metric, v);
   const limits = formatRange(min, max, meta.unit);
@@ -165,7 +156,6 @@ function SensorDetail({ metric }: { metric: AlertMetric }) {
             gapMs={3 * intervalSec * 1000 + 5000}
             height={220}
             floorZero={metric !== 'airTemp'}
-            threshold={fanLine}
             formatTick={(v) => formatAxis(metric, v)}
             formatValue={fmt}
             formatTime={(t) => manilaTime(t)}
@@ -209,17 +199,6 @@ function SensorDetail({ metric }: { metric: AlertMetric }) {
           <Text color="secondary">Alert limits</Text>
           <Text variant="bodyStrong">{limits ?? 'No limits set'}</Text>
         </View>
-        {metric === 'airTemp' && thresholds ? (
-          <>
-            <Divider style={styles.divider} />
-            <View style={styles.limitRow}>
-              <Text color="secondary">Fan turns ON / OFF</Text>
-              <Text variant="bodyStrong">
-                {thresholds.fanOnTemp}° / {thresholds.fanOffTemp}°
-              </Text>
-            </View>
-          </>
-        ) : null}
         <View style={styles.actions}>
           <Button
             label="Open in History"
@@ -254,6 +233,5 @@ const styles = StyleSheet.create({
     gap: 12,
     minHeight: 36,
   },
-  divider: { marginVertical: 6 },
   actions: { gap: 10, marginTop: 14 },
 });

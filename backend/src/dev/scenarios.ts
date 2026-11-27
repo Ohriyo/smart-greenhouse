@@ -4,6 +4,3 @@ import { z } from 'zod';
 export const SIM_SCENARIOS = ['heatwave', 'drysoil', 'normal'] as const;
 export const SimScenarioNameSchema = z.enum(SIM_SCENARIOS);
 export type SimScenario = z.infer<typeof SimScenarioNameSchema>;
-
-/** Message on greenhouse/{id}/sim. */
-export const SimScenarioSchema = z.object({ scenario: SimScenarioNameSchema });

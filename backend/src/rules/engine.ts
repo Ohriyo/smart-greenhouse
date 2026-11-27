@@ -5,7 +5,14 @@ import { createLogger } from '../lib/logger.js';
 import type { Realtime } from '../realtime/socket.js';
 import { insertAlert, latestMetricAlerts, type NewAlert } from '../services/alerts.js';
 import { getThresholds } from '../services/thresholds.js';
-import { EMPTY_STATE, evaluateMetric, type MetricState, type RuleAlert } from './thresholdRule.js';
+import type { SmsCandidate } from '../sms/notifier.js';
+import {
+  EMPTY_STATE,
+  evaluateMetric,
+  transitions,
+  type MetricState,
+  type RuleAlert,
+} from './thresholdRule.js';
 
 const log = createLogger('rules');
 
@@ -50,19 +57,29 @@ export interface RulesEngine {
 
 export function createRulesEngine(opts: {
   realtime: Realtime;
+  /** ALERT_COOLDOWN_MINUTES: a new episode within it (same metric) stays silent in the app. */
   cooldownMs: number;
   /** Called for every new alert (push notifications). Must not throw; not awaited. */
   onAlert?: (alert: AlertDto) => void;
+  /**
+   * Called when a reading crosses a limit or comes back inside it (SMS alerts,
+   * which apply their own cooldown). Must not throw; not awaited.
+   */
+  onSmsCandidate?: (candidate: SmsCandidate) => void;
+  /** Injected in tests. */
+  clock?: () => number;
 }): RulesEngine {
-  const { realtime, cooldownMs, onAlert } = opts;
+  const { realtime, cooldownMs, onAlert, onSmsCandidate } = opts;
+  const clock = opts.clock ?? Date.now;
   const states = new Map<string, MetricState>();
 
-  async function raise(alert: NewAlert): Promise<void> {
+  async function raise(alert: NewAlert): Promise<AlertDto> {
     const saved = await insertAlert(alert);
     log.info(`[${saved.severity}] ${saved.deviceId}: ${saved.message}`);
     const dto = toAlertDto(saved);
     realtime.emitAlert(dto); // app open: live list + toast
     onAlert?.(dto); // app closed: push notification (in the background, never blocks ingest)
+    return dto;
   }
 
   /** In-memory state, restored from the alert table after a restart. */
@@ -94,7 +111,7 @@ export function createRulesEngine(opts: {
   return {
     async evaluateReading(device, reading) {
       const thresholds = await getThresholds(device.id);
-      const now = Date.now();
+      const now = clock();
       for (const metric of ALERT_METRICS) {
         const value = reading[metric];
         if (value === null) continue; // sensor failure: keep the current state
@@ -102,8 +119,9 @@ export function createRulesEngine(opts: {
         const state = await loadState(device.id, metric);
         const result = evaluateMetric(metric, value, min, max, state, now, cooldownMs);
         states.set(`${device.id}:${metric}`, result.next);
+        let alert: AlertDto | null = null;
         if (result.alert) {
-          await raise({
+          alert = await raise({
             deviceId: device.id,
             type: result.alert.type,
             severity: result.alert.severity,
@@ -112,6 +130,23 @@ export function createRulesEngine(opts: {
             // Only breach alerts carry the limit that was crossed.
             limit: result.alert.type === 'recovered' ? null : result.alert.limit,
             message: messageFor(metric, result.alert, value),
+          });
+        }
+        if (!onSmsCandidate) continue;
+        for (const t of transitions(state, result.next)) {
+          const breach = t.kind !== 'recovered';
+          // Link the SMS to the in-app alert of this same change, if one was created.
+          const linked =
+            alert && (breach ? alert.type === t.direction : alert.type === 'recovered')
+              ? alert.id
+              : null;
+          onSmsCandidate({
+            deviceId: device.id,
+            metric,
+            condition: breach ? (t.direction === 'above_max' ? 'HIGH' : 'LOW') : 'NORMAL',
+            value,
+            limit: breach ? (t.direction === 'above_max' ? max : min) : null,
+            alertId: linked,
           });
         }
       }

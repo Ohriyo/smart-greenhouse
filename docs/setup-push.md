@@ -4,14 +4,16 @@ Closed-app alerts take this route: **backend → Expo Push Service → Firebase 
 
 You do this setup once. After that, you only rebuild when native code or config changes (new native packages, `app.config.ts` plugins, `google-services.json`). Normal code changes reload instantly as before.
 
-> **This is only for push notifications.** SMS alerts ([setup-sms.md](setup-sms.md)) are sent by the backend on your laptop, so they work with Expo Go too. You don't need a development build for them.
+> **This is only for push notifications.** SMS alerts ([setup-sms.md](setup-sms.md)) are sent by the backend, so they work with Expo Go and the web app too. The web app (Vercel) has no closed-app push at all.
+>
+> **Release APK (EAS `preview` profile):** it gets push only if `google-services.json` exists when you build (step 3) and the FCM key is uploaded (step 4). Without the file the APK still builds, just without push.
 
 What you need:
 
 - A free **Expo account**: <https://expo.dev/signup>
 - A **Google account** for Firebase.
 - About 30–45 min. Most of that is waiting for the cloud build.
-- **Internet on the laptop** while the backend runs (it sends pushes through Expo's servers).
+- The **backend deployed** (Render) or running locally with internet: it sends pushes through Expo's servers.
 
 All commands are for **PowerShell**, run from the `mobile` folder unless a step says otherwise:
 
@@ -174,7 +176,7 @@ On the phone (same Wi-Fi as the laptop):
 
 1. Open **ETanim**. The dev launcher lists the servers it finds on the network. Tap the one with your laptop's IP (`http://192.168.50.69:8081`).
 2. Or scan the QR code from the terminal with the phone camera.
-3. The app loads. It's a new app with its own storage, so check **Settings** → backend address. It's pre-filled from `mobile/.env` (`EXPO_PUBLIC_API_URL`) if you set that; otherwise enter `http://192.168.50.69:4000` and tap **Save**.
+3. The app loads. Its server address comes from `mobile/.env` (`EXPO_PUBLIC_API_URL`, e.g. your Render URL); after changing it, restart `npx expo start --dev-client`. **Settings → Server connection → Test connection** checks it.
 
 When do you need `eas build` again? Only after adding a native package, changing plugins or Android settings in `app.config.ts`, or replacing `google-services.json`. JavaScript/TypeScript changes reload live.
 
@@ -183,7 +185,7 @@ When do you need `eas build` again? Only after adding a native package, changing
 1. **Alerts** tab → the card *"Get alerts when the app is closed"* → **Turn on notifications**. Android 13+ shows the system dialog → **Allow**.
    - Android 12 and older don't ask: notifications are allowed by default.
 2. **Settings** → **Notifications** → the **Push notifications** switch should be **on** (it turns on once Android's permission is granted and the phone is registered).
-   - The backend terminal doesn't log the registration. To check, run `curl.exe -X POST http://localhost:4000/api/notifications/test` in another PowerShell window. It sends the same test as the button below.
+   - The backend terminal doesn't log the registration. To check, run `curl.exe -X POST https://<your-service>.onrender.com/api/notifications/test` (or `http://localhost:4000/...` for a local backend) in another PowerShell window. It sends the same test as the button below.
    - `curl.exe` is the real curl program. Plain `curl` in PowerShell is a different command.
    - The answer `{"tokens":1,"sent":1,…}` means the server knows your phone and Expo accepted the message.
 3. Tap **Send test notification**. A notification *"ETanim – Test notification…"* should appear within seconds.
@@ -240,13 +242,13 @@ Good to know:
 |---|---|
 | Settings says *Unavailable: Expo Go cannot receive push notifications* | You opened the project in Expo Go. Open the **ETanim** app instead |
 | *EAS project id missing* | Step 2: set `EAS_PROJECT_ID`, then restart `npx expo start --dev-client` |
-| *Not registered* + an error message | Backend address wrong or backend not running. Settings → Test connection |
+| *Not registered* + an error message | Server address wrong (`EXPO_PUBLIC_API_URL`) or the server is down/asleep. Settings → Test connection |
 | Test returns `"tokens": 0` | The phone never registered: allow notifications (step 7) and reopen the app |
-| Test returns `"failed": 1` | No internet on the laptop, or credentials problem. The backend log shows the reason |
+| Test returns `"failed": 1` | Credentials problem, or the server can't reach Expo. The backend log (Render → Logs) shows the reason |
 | Backend log `InvalidCredentials` / `MismatchSenderId` | The FCM V1 key (step 4) and `google-services.json` (step 3) must come from the **same** Firebase project. Fix it, then rebuild (step 5) |
 | Test `sent: 1` but nothing on the phone | Battery settings (step 8). Check the *Greenhouse alerts* category is on and the phone has internet |
 | Backend log *removed … unregistered push token(s)* | The app was uninstalled or its data cleared. Normal clean-up; reopening the app registers again |
 
 ## 10. Try the demo notification
 
-With a development build, the dev-only **Demo** sheet's **Trigger push notification** button sends a *real* push through this whole route ("Greenhouse alert / Air temperature 33.1 °C — fan turned on"). Press Home right after tapping it, and tap the notification to open the Alerts tab. In Expo Go, the same button shows an equivalent local notification instead.
+With a development build, the dev-only **Demo** sheet's **Trigger push notification** button sends a *real* push through this whole route ("Greenhouse alert / Air temperature 36.4 °C — above the 35 °C limit"). Press Home right after tapping it, and tap the notification to open the Alerts tab. In Expo Go, the same button shows an equivalent local notification instead.

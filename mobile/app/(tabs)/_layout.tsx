@@ -37,7 +37,7 @@ function TabIconView({
 const HomeIcon = tabIcon('grid-outline');
 const HistoryIcon = tabIcon('mci-history');
 const AlertsIcon = tabIcon('notifications-outline');
-const ControlIcon = tabIcon('mci-fan');
+const ControlIcon = tabIcon('options-outline');
 const SettingsIcon = tabIcon('settings-outline');
 
 export default function TabLayout() {

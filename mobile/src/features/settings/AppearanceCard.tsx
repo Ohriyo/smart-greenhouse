@@ -85,8 +85,7 @@ export function AppearanceCard() {
 
       <BottomSheet visible={about} onClose={() => setAbout(false)} eyebrow="About" title="ETanim">
         <Text color="secondary">
-          Monitors and controls your ESP32 greenhouse over your home network: live readings,
-          history, alerts and the ventilation fan.
+          Monitors your ESP32 greenhouse over your home network: live readings, history and alerts.
         </Text>
         <View style={styles.facts}>
           <Fact label="Version" value={version} />

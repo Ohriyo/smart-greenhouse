@@ -7,7 +7,7 @@ type MciName = ComponentProps<typeof MaterialCommunityIcons>['name'];
 
 /**
  * Any Ionicons name, or a MaterialCommunityIcons name prefixed with "mci-"
- * (for glyphs Ionicons lacks: "mci-fan", "mci-sprout", "mci-history", …).
+ * (for glyphs Ionicons lacks: "mci-sprout", "mci-history", …).
  */
 export type IconName = IonName | `mci-${MciName}`;
 

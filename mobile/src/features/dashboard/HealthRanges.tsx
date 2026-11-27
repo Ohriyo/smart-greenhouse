@@ -29,12 +29,11 @@ export const HealthRanges = memo(function HealthRanges({
   const soilMin = thresholds?.soilMoistureMin ?? null;
   const soilMax = thresholds?.soilMoistureMax ?? null;
   const tempMin = thresholds?.airTempMin ?? null;
-  const fanOn = thresholds?.fanOnTemp ?? 32;
-  const fanOff = thresholds?.fanOffTemp ?? 28;
+  const tempMax = thresholds?.airTempMax ?? null;
   const soilText = soil === null ? '—' : `${formatValue(soil, 0)}%`;
   const tempText = temp === null ? '—' : `${formatValue(temp, 0)}°`;
   const soilCap = soilCaption(soil, soilMin, soilMax);
-  const tempCap = tempCaption(temp, tempMin, fanOn);
+  const tempCap = tempCaption(temp, tempMin, tempMax);
 
   return (
     <Card
@@ -70,29 +69,15 @@ export const HealthRanges = memo(function HealthRanges({
             value={temp}
             min={TEMP_MIN}
             max={TEMP_MAX}
-            zone={[tempMin ?? TEMP_MIN, fanOn]}
-            ticks={[fanOff, fanOn]}
+            zone={tempMin !== null && tempMax !== null ? [tempMin, tempMax] : null}
             color={colors.chart.airTemp}
             display={tempText}
             caption={tempCap}
             startLabel={`${TEMP_MIN}°`}
             endLabel={`${TEMP_MAX}°`}
-            accessibilityLabel={`Air temperature ${temp === null ? 'no reading' : `${formatValue(temp, 1)} degrees`}, ${tempCap}. Fan turns off at ${fanOff} and on at ${fanOn} degrees`}
+            accessibilityLabel={`Air temperature ${temp === null ? 'no reading' : `${formatValue(temp, 1)} degrees`}, ${tempCap}`}
           />
         </View>
-      </View>
-      <View
-        style={[styles.legend, { borderTopColor: colors.border }]}
-        importantForAccessibility="no-hide-descendants"
-      >
-        <StatusPill tone="ok" label="Fan thresholds" variant="plain" />
-        <Text variant="caption" color="secondary">
-          OFF {formatValue(fanOff, fanOff % 1 ? 1 : 0)}°
-        </Text>
-        <View style={[styles.dot, { backgroundColor: colors.chart.airTemp }]} />
-        <Text variant="caption" color="secondary">
-          ON {formatValue(fanOn, fanOn % 1 ? 1 : 0)}°
-        </Text>
       </View>
     </Card>
   );
@@ -102,14 +87,4 @@ const styles = StyleSheet.create({
   gauges: { flexDirection: 'row', justifyContent: 'space-around', gap: 8 },
   gauge: { alignItems: 'center', gap: 4, flex: 1 },
   gaugeTitle: { textAlign: 'center' },
-  legend: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    marginTop: 12,
-    paddingTop: 12,
-    borderTopWidth: StyleSheet.hairlineWidth,
-  },
-  dot: { width: 7, height: 7, borderRadius: 4, marginLeft: 4 },
 });

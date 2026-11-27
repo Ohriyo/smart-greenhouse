@@ -1,56 +1,148 @@
-import express, { type Express } from 'express';
+import express, { type Express, type RequestHandler } from 'express';
 import { prisma } from '../db.js';
-import type { CommandSender } from '../mqtt/commands.js';
+import type { DevTools } from '../dev/devTools.js';
+import type { CommandRouter } from '../ingest/commands.js';
+import type { Ingest } from '../ingest/ingest.js';
+import { createLogger } from '../lib/logger.js';
 import type { PushSender } from '../push/sender.js';
 import type { Realtime } from '../realtime/socket.js';
-import type { DevTools } from '../dev/devTools.js';
 import type { SmsNotifier } from '../sms/notifier.js';
+import { corsMiddleware } from './cors.js';
 import { errorHandler, notFoundHandler } from './errors.js';
 import { alertsRouter } from './routes/alerts.js';
 import { devRouter } from './routes/dev.js';
 import { devicesRouter } from './routes/devices.js';
 import { notificationsRouter } from './routes/notifications.js';
+import { readingsRouter, statsRouter } from './routes/readings.js';
 import { smsRouter } from './routes/sms.js';
+import { thresholdsRouter } from './routes/thresholds.js';
 
+const log = createLogger('http');
 const startedAt = Date.now();
 
+/** A database check that never takes long (a suspended Neon compute wakes in ~1 s). */
+const DB_CHECK_TIMEOUT_MS = 3_000;
+
+export interface AppConfig {
+  /** DEVICE_API_KEY: required as X-Device-Key on POST /api/readings. */
+  deviceApiKey: string;
+  /** ADMIN_API_KEY: required as X-Admin-Key on POST /api/alerts/test (unset = 503). */
+  adminApiKey: string | undefined;
+  /** CORS_ORIGIN entries (browser origins of the web app). */
+  corsOrigins: readonly string[];
+  /** DEFAULT_DEVICE_ID. */
+  defaultDeviceId: string;
+}
+
+/** The backend's broker connection: "off" when MQTT_URL is not set. */
+export type MqttState = 'connected' | 'disconnected' | 'off';
+
 export interface AppDeps {
-  commands: CommandSender;
+  ingest: Ingest;
+  commands: Pick<CommandRouter, 'deliver'>;
+  mqttState: () => MqttState;
   push: PushSender;
   sms: SmsNotifier;
   devTools: DevTools;
-  /**
-   * A lookup because the Socket.IO server is created from the HTTP server, which in
-   * turn needs this app first.
-   */
-  getRealtime: () => Realtime | null;
+  realtime: Realtime;
+  config: AppConfig;
 }
 
-export function createApp({ commands, push, sms, devTools, getRealtime }: AppDeps): Express {
+async function databaseStatus(): Promise<'ok' | 'error'> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<'error'>((resolve) => {
+    timer = setTimeout(() => {
+      resolve('error');
+    }, DB_CHECK_TIMEOUT_MS);
+  });
+  try {
+    return await Promise.race([prisma.$queryRaw`SELECT 1`.then(() => 'ok' as const), timeout]);
+  } catch {
+    return 'error';
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * One structured line per request: method, path (no query string, no headers or
+ * bodies, so keys never reach the log), status and duration. Routine traffic
+ * (GETs, readings, /health) logs at debug level; changes at info; errors at warn/error.
+ */
+const requestLog: RequestHandler = (req, res, next) => {
+  const started = performance.now();
+  // Read now: inside a mounted router (e.g. /api/readings) req.path loses its prefix.
+  const { method, path } = req;
+  res.on('finish', () => {
+    const fields = {
+      method,
+      path,
+      status: res.statusCode,
+      ms: Math.round(performance.now() - started),
+    };
+    const line = `${method} ${path} ${fields.status} ${fields.ms} ms`;
+    const routine =
+      method === 'GET' || method === 'OPTIONS' || (method === 'POST' && path === '/api/readings');
+    if (res.statusCode >= 500) log.error(line, fields);
+    else if (res.statusCode >= 400) log.warn(line, fields);
+    else if (routine) log.debug(line, fields);
+    else log.info(line, fields);
+  });
+  next();
+};
+
+export function createApp(deps: AppDeps): Express {
+  const { ingest, commands, mqttState, push, sms, devTools, realtime, config } = deps;
   const app = express();
   app.disable('x-powered-by');
+  // Render (and Vercel's proxy, for the web app) sit in front: trust one proxy hop.
+  app.set('trust proxy', 1);
+  app.use(requestLog);
+  // Before the body parser, so preflight requests are answered right away.
+  app.use(corsMiddleware(config.corsOrigins));
   app.use(express.json({ limit: '16kb' }));
 
-  app.get('/api/health', async (_req, res) => {
-    let db: 'ok' | 'error' = 'ok';
-    try {
-      await prisma.$queryRaw`SELECT 1`;
-    } catch {
-      db = 'error';
-    }
-    const mqtt = commands.isBrokerConnected() ? 'connected' : 'disconnected';
-    res.status(db === 'ok' ? 200 : 503).json({
-      status: db === 'ok' && mqtt === 'connected' ? 'ok' : 'degraded',
+  const uptimeSec = () => Math.round((Date.now() - startedAt) / 1000);
+
+  // Render's health check and the ESP32's keep-awake ping: always 200 while the
+  // process runs (a database outage must not make Render restart the service in a
+  // loop); `db` and `mqtt` report the database and the broker connection.
+  app.get('/health', async (_req, res) => {
+    const db = await databaseStatus();
+    res.json({
+      status: db === 'ok' ? 'ok' : 'degraded',
       db,
-      mqtt,
-      uptimeSec: Math.round((Date.now() - startedAt) / 1000),
+      mqtt: mqttState(),
+      time: new Date().toISOString(),
+      uptimeSec: uptimeSec(),
+    });
+  });
+
+  // The app's connection check: 503 when the database fails.
+  app.get('/api/health', async (_req, res) => {
+    const db = await databaseStatus();
+    res.status(db === 'ok' ? 200 : 503).json({
+      status: db === 'ok' ? 'ok' : 'degraded',
+      db,
+      mqtt: mqttState(),
+      uptimeSec: uptimeSec(),
       devTools: devTools.enabled,
       time: new Date().toISOString(),
     });
   });
 
-  app.use('/api/devices', devicesRouter(commands, getRealtime));
-  app.use('/api/alerts', alertsRouter());
+  app.use(
+    '/api/readings',
+    readingsRouter({
+      ingest,
+      deviceApiKey: config.deviceApiKey,
+      defaultDeviceId: config.defaultDeviceId,
+    }),
+  );
+  app.use('/api/stats', statsRouter({ defaultDeviceId: config.defaultDeviceId }));
+  app.use('/api/thresholds', thresholdsRouter({ defaultDeviceId: config.defaultDeviceId }));
+  app.use('/api/devices', devicesRouter(commands, realtime));
+  app.use('/api/alerts', alertsRouter(sms, config.adminApiKey));
   app.use('/api/sms', smsRouter(sms));
   if (devTools.enabled) app.use('/api/dev', devRouter(devTools));
   app.use('/api', notificationsRouter(push));

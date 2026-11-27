@@ -27,11 +27,5 @@ export const LiveStatusCard = memo(function LiveStatusCard({
     [reading, thresholds, liveness, lastSeen],
   );
 
-  return (
-    <StatusCard
-      summary={summary}
-      fanOn={reading?.fanOn ?? null}
-      fanMode={reading?.fanMode ?? null}
-    />
-  );
+  return <StatusCard summary={summary} />;
 });

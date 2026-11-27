@@ -26,7 +26,13 @@ import {
 import { formatAxis, formatMetricText, METRICS } from '@/utils/sensors';
 import { formatRelative } from '@/utils/time';
 
-import { alertDetail, alertTitle, alertVisual, SEVERITY_LABEL } from './presentation';
+import {
+  alertDetail,
+  alertTitle,
+  alertVisual,
+  SEVERITY_LABEL,
+  smsStatusLabel,
+} from './presentation';
 
 const HOUR = 3_600_000;
 
@@ -79,6 +85,7 @@ function Body({ alert, onClose }: { alert: Alert; onClose: () => void }) {
   const alertTs = Date.parse(alert.ts);
   const visual = alertVisual(alert);
   const tone = toneColors(theme, visual.tone);
+  const sms = alert.sms ? smsStatusLabel(alert.sms.status) : null;
   // Computed once when the sheet opens: the window must not move while you read it.
   const [now] = useState(() => Date.now());
   const win = useMemo(() => (metric ? contextWindow(alertTs, now) : null), [metric, alertTs, now]);
@@ -122,6 +129,7 @@ function Body({ alert, onClose }: { alert: Alert; onClose: () => void }) {
             {alert.readAt === null ? null : (
               <StatusPill tone="neutral" label="Read" variant="outline" />
             )}
+            {sms ? <StatusPill tone={sms.tone} label={sms.text} variant="outline" /> : null}
           </View>
           <Text
             variant="caption"
@@ -134,6 +142,11 @@ function Body({ alert, onClose }: { alert: Alert; onClose: () => void }) {
       </View>
 
       <Text>{alert.message}</Text>
+      {alert.sms?.detail ? (
+        <Text variant="caption" color="secondary">
+          SMS: {alert.sms.detail}
+        </Text>
+      ) : null}
 
       {metric && alert.value !== null ? (
         <View style={styles.tiles}>

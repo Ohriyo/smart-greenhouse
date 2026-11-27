@@ -23,8 +23,8 @@ export function RootErrorBoundary({ error, retry }: ErrorBoundaryProps) {
           {errorTitle(error)}
         </Text>
         <Text color="secondary" style={styles.center}>
-          The app hit an unexpected problem. Your greenhouse is not affected: the fan keeps running
-          on its own and alerts still arrive as notifications.
+          The app hit an unexpected problem. Your greenhouse is not affected: it keeps sending
+          readings and alerts still arrive as notifications.
         </Text>
         {error instanceof ApiError ? (
           <Text color="secondary" style={styles.center}>

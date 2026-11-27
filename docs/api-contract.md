@@ -2,20 +2,29 @@
 
 **Single source of truth** for every payload between the ESP32, the backend and the app. Update it whenever the API changes. The mobile Zod schemas mirror this file.
 
-- Contract version: **phase 10** (firmware: telemetry `errors`/`soilDryMv`/`soilWetMv`, `soilRaw` in mV, the `calibrateSoil` command and `POST /api/devices/:id/soil-calibration`). Phase 9 added the retained-status, stale-command and retention rules; phase 8 added push (§6).
-- Base URL: `http://<laptop-LAN-IP>:4000` (port from `PORT` in `backend/.env`)
+- Contract version: **deploy-3** (2026-11-27): **MQTT is back** as the ESP32's main transport, through a hosted broker (EMQX, TLS): telemetry, retained status with Last Will, commands (§4); `POST /api/readings` stays as its automatic fallback. New fields: Device `transport`, `/health` and `/api/health` `mqtt`, soil-calibration `delivery`. deploy-2 (2026-11-27): SMS through **textbee** (an Android phone's SIM) by default, Semaphore still selectable (`SMS_PROVIDER`, §7); `GET /api/sms/status` → `provider` is `"textbee"` or `"semaphore"`. deploy-1 (2026-11-26): the ESP32 posts readings over HTTPS (§4; MQTT removed), PostgreSQL, CORS, SMS alerts configured in the server environment (§7). Earlier: phase 11 (monitoring only), phase 10 (firmware, soil calibration), phase 8 (push, §6).
+- Base URL: production `https://<your-service>.onrender.com`; local `http://localhost:4000` (`PORT` in `backend/.env`). The app reads it from `EXPO_PUBLIC_API_URL` only.
 - All timestamps in REST and Socket.IO are **ISO-8601 UTC strings** (`"2026-11-09T10:15:00.000Z"`).
 - Units: `airTemp` °C · `humidity` %RH · `soilMoisture` % (0 = dry calibration, 100 = wet) · `soilRaw` sensor output in mV (0–4095 accepted) · `lux` lx · `rssi` dBm.
 - A sensor value of `null` means the read failed or the sensor is missing.
 - There is **no soil temperature sensor**. No payload has a soil temperature field.
 
+**Access.** Single user, no login. Two shared secrets, both from the server environment and never in the app:
+
+| Header | Env variable | Needed for |
+|---|---|---|
+| `X-Device-Key` | `DEVICE_API_KEY` | `POST /api/readings` (the ESP32's HTTPS fallback / the simulator) |
+| `X-Admin-Key` | `ADMIN_API_KEY` | `POST /api/alerts/test` (one real test SMS) |
+
+A missing or wrong key → `401 UNAUTHORIZED`. A route whose key isn't configured on the server → `503 NOT_CONFIGURED`.
+
+**MQTT** (§4) is protected by the broker, not by these headers: the ESP32 and the backend each log in to EMQX with their own username and password (backend: `MQTT_USERNAME` / `MQTT_PASSWORD`; ESP32: `secrets.h`), over TLS.
+
+**CORS** (browsers only, i.e. the web build): the origins in `CORS_ORIGIN` (comma-separated, e.g. `https://etanim.vercel.app`) and any `http://localhost:<port>` get `Access-Control-Allow-Origin`; methods GET, POST, PUT, PATCH, DELETE; headers `Content-Type`, `X-Device-Key`, `X-Admin-Key`. Requests without an `Origin` header (the ESP32, the Android app, curl) are unaffected. Socket.IO applies the same rule.
+
 ---
 
 ## 1. Data types
-
-### FanMode
-
-`"auto" | "on" | "off"`. In `auto` the ESP32 runs its local hysteresis (`fanOnTemp`/`fanOffTemp`). `on`/`off` force the fan.
 
 ### Device
 
@@ -26,33 +35,28 @@
   "online": true,
   "lastSeen": "2026-11-09T10:15:00.000Z",
   "createdAt": "2026-11-09T09:00:00.000Z",
-  "telemetryIntervalSec": 5,
-  "reportedFanOnTemp": 32,
-  "reportedFanOffTemp": 28,
-  "reportedFanThresholdsAt": "2026-11-09T09:00:05.000Z",
+  "telemetryIntervalSec": 30,
   "rssi": -61,
   "uptimeSec": 3605,
   "uptimeAt": "2026-11-09T10:15:00.000Z",
   "soilDryMv": 2600,
-  "soilWetMv": 1200
+  "soilWetMv": 1200,
+  "transport": "mqtt"
 }
 ```
 
 | Field | Type | Notes |
 |---|---|---|
-| id | string | From the MQTT topic. 1–64 chars `A-Z a-z 0-9 _ -` |
+| id | string | The `deviceId` of `POST /api/readings` (default `DEFAULT_DEVICE_ID`, `gh-01`). 1–64 chars `A-Z a-z 0-9 _ -` |
 | name | string | Defaults to `id`; rename with `PATCH /api/devices/:id` (1–40 characters) |
 | online | boolean | See "Online / offline" in §4 |
-| lastSeen | string \| null | Time the backend last received a live message |
-| createdAt | string | Auto-created on the first MQTT message |
-| telemetryIntervalSec | number \| null | Interval the device reports in telemetry (`intervalSec`); null if never reported |
-| reportedFanOnTemp / reportedFanOffTemp | number \| null | Fan thresholds the device last reported **using** (telemetry `fanOnTemp`/`fanOffTemp`); null if it never reported them |
-| reportedFanThresholdsAt | string \| null | When those reported values last changed |
-| rssi | number \| null | Latest Wi-Fi signal (dBm) from telemetry; null if not reported |
+| lastSeen | string \| null | Time the backend last received a reading |
+| createdAt | string | Auto-created on the first reading |
+| telemetryIntervalSec | number \| null | Interval the device reports (`intervalSec`); null if never reported |
+| rssi | number \| null | Latest Wi-Fi signal (dBm); null if not reported |
 | uptimeSec / uptimeAt | number \| null / string \| null | Device uptime (s) as reported at `uptimeAt`. Current uptime ≈ `uptimeSec + (now − uptimeAt)` while online; a smaller value than before means it rebooted |
-| soilDryMv / soilWetMv | number \| null | Soil calibration the device reports using (telemetry); null if never reported. A change emits `device:status` (acknowledges `calibrateSoil`) |
-
-**Threshold acknowledgement:** the device has applied the saved fan thresholds when `reportedFanOnTemp === Thresholds.fanOnTemp` and `reportedFanOffTemp === Thresholds.fanOffTemp`. Until then the change is pending: it is sent immediately if the device is online, otherwise on its next reconnect (§4).
+| soilDryMv / soilWetMv | number \| null | Soil calibration the device reports using; null if never reported. A change emits `device:status` (acknowledges `calibrateSoil`) |
+| transport | `"mqtt"` \| `"https"` \| null | How its latest reading arrived: through the MQTT broker, or `POST /api/readings` (the ESP32's fallback). null before the first reading. A change emits `device:status` |
 
 ### Reading
 
@@ -66,21 +70,17 @@
   "soilMoisture": 43,
   "soilRaw": 2310,
   "lux": 812.5,
-  "fanOn": false,
-  "fanMode": "auto",
   "rssi": -61
 }
 ```
 
-`airTemp`, `humidity`, `soilMoisture`, `soilRaw`, `lux` and `rssi` are `number | null`. `fanOn` and `fanMode` are always present and are the **confirmed** fan state reported by the device.
+`airTemp`, `humidity`, `soilMoisture`, `soilRaw`, `lux` and `rssi` are `number | null`. (The device sends the air temperature as `temperature`; it is stored and returned as `airTemp`.)
 
 ### Thresholds
 
 ```json
 {
   "deviceId": "gh-01",
-  "fanOnTemp": 32,
-  "fanOffTemp": 28,
   "airTempMin": 15,
   "airTempMax": 35,
   "humidityMin": 40,
@@ -95,14 +95,12 @@
 
 | Field | Default | Rule |
 |---|---|---|
-| fanOnTemp | 32 | 10–50 °C |
-| fanOffTemp | 28 | 10–50 °C and `fanOnTemp − fanOffTemp ≥ 1` |
 | airTempMin / airTempMax | 15 / 35 | −40–80 °C, nullable |
 | humidityMin / humidityMax | 40 / 85 | 0–100 %, nullable |
 | soilMoistureMin / soilMoistureMax | 30 / 80 | 0–100 %, nullable |
 | luxMin / luxMax | null / null | 0–200000 lx, nullable |
 
-When both values of a min/max pair are set, min must be lower than max. `null` means "no limit". The min/max limits feed the alert rules (§5), and `fanOnTemp`/`fanOffTemp` are sent to the ESP32.
+When both values of a min/max pair are set, min must be lower than max. `null` means "no limit". The limits feed the alert rules (§5) and the SMS alerts (§7); they live on the backend only and are never sent to the ESP32.
 
 ### Alert
 
@@ -117,7 +115,8 @@ When both values of a min/max pair are set, min must be lower than max. `null` m
   "value": 35.4,
   "limit": 35,
   "message": "Air temperature high: 35.4 °C (max 35 °C)",
-  "readAt": null
+  "readAt": null,
+  "sms": { "status": "sent", "at": "2026-11-09T10:15:01.000Z", "detail": null }
 }
 ```
 
@@ -129,23 +128,10 @@ When both values of a min/max pair are set, min must be lower than max. `null` m
 | severity | `"info" \| "warning" \| "critical"` | |
 | metric | `"airTemp" \| "humidity" \| "soilMoisture" \| "lux" \| null` | null for `offline`/`online` |
 | value | number \| null | The reading that caused the alert; null for `offline`/`online` |
-| limit | number \| null | The threshold that was crossed (`above_max` → the max, `below_min` → the min). `null` for `recovered`, `offline`, `online`, and for alerts created before this field existed |
+| limit | number \| null | The threshold that was crossed (`above_max` → the max, `below_min` → the min). `null` for `recovered`, `offline`, `online` |
 | message | string | Ready-to-display English text (numbers rounded to 1 decimal, trailing `.0` dropped) |
 | readAt | string \| null | null = unread |
-
-### FanState
-
-```json
-{
-  "deviceId": "gh-01",
-  "ts": "2026-11-09T10:15:00.000Z",
-  "fanOn": true,
-  "fanMode": "auto",
-  "airTemp": 32.1
-}
-```
-
-A **confirmed** change of `fanOn` or `fanMode`, detected from telemetry. `airTemp` is the temperature at that moment (nullable).
+| sms | object \| null | The newest SMS attempt for this alert (§7): `status` `"sent" \| "failed" \| "skipped_cooldown" \| "skipped_daily_cap" \| "dry_run"`, `at`, `detail` (why it wasn't sent; null when sent). `null` = no SMS for this alert (SMS off, not processed yet, or not a texted situation). The Socket.IO `alert` event always has `sms: null` (the SMS is sent right after) |
 
 ### Error
 
@@ -156,60 +142,170 @@ Every non-2xx response has this shape:
   "error": {
     "code": "VALIDATION_ERROR",
     "message": "Invalid request",
-    "details": [{ "path": "fanOffTemp", "message": "fanOffTemp must be at least 1 °C below fanOnTemp" }]
+    "details": [{ "path": "airTempMin", "message": "airTempMin must be lower than airTempMax" }]
   }
 }
 ```
 
-`details` is present only for `VALIDATION_ERROR`.
+`details` is present only for `VALIDATION_ERROR`. No stack traces, ever.
 
 | HTTP | code | When |
 |---|---|---|
-| 400 | `VALIDATION_ERROR` | Body or query fails validation |
+| 400 | `VALIDATION_ERROR` | Body or query fails validation (bad or out-of-range values) |
 | 400 | `INVALID_JSON` | Body is not valid JSON |
 | 4xx | `BAD_REQUEST` | Other client errors (e.g. 413 body > 16 kB) |
+| 401 | `UNAUTHORIZED` | Missing or wrong `X-Device-Key` / `X-Admin-Key` |
 | 404 | `NOT_FOUND` | Unknown device, alert or route |
-| 409 | `DEVICE_OFFLINE` | Command sent to an offline device |
-| 409 | `SMS_NOT_CONFIGURED` | Test SMS requested but no owner number is saved |
+| 409 | `DEVICE_OFFLINE` | Soil calibration requested for an offline device |
+| 409 | `SMS_NOT_CONFIGURED` | Test SMS requested but `ALERT_PHONE_NUMBERS` is empty |
 | 409 | `NOT_SIMULATED` | Dev-only scenario requested for a device that is not a running simulator |
 | 429 | `RATE_LIMITED` | Too many test SMS (5 per hour) |
-| 503 | `BROKER_UNAVAILABLE` | Backend not connected to Mosquitto |
+| 503 | `NOT_CONFIGURED` | The route's key (`DEVICE_API_KEY` / `ADMIN_API_KEY`) is not set on the server |
 | 500 | `INTERNAL_ERROR` | Unexpected server error |
 
 ---
 
 ## 2. REST endpoints
 
-Request bodies are JSON (`Content-Type: application/json`, max 16 kB). Unknown body fields are rejected (`VALIDATION_ERROR`).
+Request bodies are JSON (`Content-Type: application/json`, max 16 kB). Unknown body fields are rejected (`VALIDATION_ERROR`), except in `POST /api/readings` (ignored, so newer firmware keeps working).
+
+### GET /health
+
+Render's health check, and the ESP32's **keep-awake ping** (every 10 min while it is on MQTT: Render's free plan sleeps after 15 min without HTTP traffic, and MQTT traffic doesn't count). **Always 200** while the process runs (a database outage must not make Render restart the service in a loop); `db` reports the database (checked with a 3 s limit), `mqtt` the backend's broker connection.
+
+```json
+{ "status": "ok", "db": "ok", "mqtt": "connected", "time": "2026-11-26T10:15:00.000Z", "uptimeSec": 342 }
+```
+
+`status` is `"ok"` or `"degraded"` (database only), `db` is `"ok"` or `"error"`, `mqtt` is `"connected"`, `"disconnected"` (reconnecting; HTTPS readings still work) or `"off"` (`MQTT_URL` not set).
 
 ### GET /api/health
 
-200 when the database works (even if MQTT is down), 503 if the database fails.
+The app's connection check: **200** when the database works, **503** when it doesn't.
+
+```json
+{ "status": "ok", "db": "ok", "mqtt": "connected", "uptimeSec": 342, "devTools": false, "time": "2026-11-26T10:15:00.000Z" }
+```
+
+`devTools` is `true` only with `DEV_TOOLS=true` (the app shows its dev-only Demo sheet then; see "Dev-only endpoints").
+
+### POST /api/readings
+
+**The ESP32's fallback**: it posts here whenever it can't reach the MQTT broker (§4); the simulator posts here when MQTT isn't configured. Header `X-Device-Key: <DEVICE_API_KEY>`. The same JSON body is what the device publishes on `greenhouse/{deviceId}/telemetry`.
 
 ```json
 {
-  "status": "ok",
-  "db": "ok",
-  "mqtt": "connected",
-  "uptimeSec": 342,
-  "devTools": false,
-  "time": "2026-11-09T10:15:00.000Z"
+  "deviceId": "gh-01",
+  "temperature": 27.4,
+  "humidity": 61.2,
+  "soilMoisture": 43,
+  "lux": 812.5,
+  "soilRaw": 2310,
+  "rssi": -61,
+  "intervalSec": 30,
+  "uptimeSec": 3605,
+  "soilDryMv": 2600,
+  "soilWetMv": 1200,
+  "ts": 1764152100000
 }
 ```
 
-`status` is `"ok"` or `"degraded"`, `db` is `"ok"` or `"error"`, and `mqtt` is `"connected"` or `"disconnected"`. `devTools` is `true` only when the backend runs with `DEV_TOOLS=true` (the app uses it to show or hide its dev-only Demo sheet; see "Dev-only endpoints" below).
+| Field | Type | Required | Range |
+|---|---|---|---|
+| deviceId | string | no (default `DEFAULT_DEVICE_ID`) | 1–64 chars `A-Z a-z 0-9 _ -` |
+| temperature | number \| null | **yes** (or `airTemp`, not both) | −40–80 °C |
+| humidity | number \| null | **yes** | 0–100 % |
+| soilMoisture | number \| null | **yes** | 0–100 % |
+| lux | number \| null | **yes** | 0–200000 lx |
+| soilRaw | integer \| null | no | 0–4095 (mV) |
+| rssi | integer \| null | no | −127–0 dBm |
+| intervalSec | integer | no (recommended) | 1–3600: the device's normal interval; drives offline detection |
+| uptimeSec | integer | no | ≥ 0: seconds since the device booted |
+| soilDryMv / soilWetMv | integer | no | 0–4095: soil calibration in use (acknowledges `calibrateSoil`) |
+| ts | integer, epoch **ms** | no | Used only if within 24 h in the past … 60 s in the future of the server clock; otherwise (no NTP) the receive time is used |
+| errors | string[] | no | Failing sensors: `"dht"` (temperature + humidity null), `"bh1750"` (lux null), `"soil"` (soilMoisture + soilRaw null), `"soil_cal"` (calibration invalid). Logged when the set changes |
+| simulator | boolean | no | Dev only, from the simulator; never sent by the real firmware |
+
+**A failed sensor is sent as `null`, never as a made-up number.** A value out of range, a wrong type, a missing required field, or both `temperature` and `airTemp` → **400** `VALIDATION_ERROR` naming the field. Bad JSON (e.g. a literal `nan`) → 400 `INVALID_JSON`. A missing or wrong key → **401**.
+
+**201** once the reading is stored:
+
+```json
+{
+  "reading": { "id": 1234, "deviceId": "gh-01", "ts": "2026-11-26T10:15:00.000Z", "airTemp": 27.4, "humidity": 61.2, "soilMoisture": 43, "soilRaw": 2310, "lux": 812.5, "rssi": -61 },
+  "commands": [{ "id": "a41f…", "type": "calibrateSoil", "point": "dry", "issuedAt": "2026-11-26T10:14:40.000Z" }]
+}
+```
+
+`commands` holds the commands queued for this device (usually `[]`; §4). Alert rules, SMS, push and live updates run **after** the response: their failures never fail or delay the device's request.
+
+### GET /api/readings/latest
+
+The newest reading of the greenhouse (`?deviceId=` optional; default `DEFAULT_DEVICE_ID`, or the first device if that one doesn't exist).
+
+```json
+{ "device": { "id": "gh-01", "name": "gh-01", "online": true, "…": "…" }, "reading": { "id": 1234, "…": "…" } }
+```
+
+Before the first reading ever arrives: `200 { "device": null, "reading": null }`. 404 for an unknown `deviceId`.
+
+### GET /api/readings?range=
+
+Time-ordered history of all four sensors, **oldest first**.
+
+| Query | Required | Values |
+|---|---|---|
+| range | no (default `24h`) | `1h` · `24h` · `7d` · `30d` |
+| deviceId | no | as above |
+
+The window `[now − range, now]` is cut into buckets of `bucketMs = max(10 s, range / 360)` (1h → 10 s, i.e. every reading; 24h → 4 min; 7d → 28 min; 30d → 2 h), aligned to multiples of `bucketMs` since the epoch. Each point is the bucket's average per sensor (2 decimals; `null` if that sensor had no value) and `count` (readings in the bucket). Empty buckets are omitted.
+
+```json
+{
+  "deviceId": "gh-01",
+  "range": "1h",
+  "from": "2026-11-26T09:15:00.000Z",
+  "to": "2026-11-26T10:15:00.000Z",
+  "bucketMs": 10000,
+  "points": [{ "ts": "2026-11-26T09:15:20.000Z", "airTemp": 27.1, "humidity": 62, "soilMoisture": 43, "lux": 790, "count": 1 }]
+}
+```
+
+Before any reading: `deviceId: null`, `points: []`. 400 for an invalid `range`.
+
+### GET /api/stats?range=
+
+Min / max / average of each sensor over the window (same `range` and `deviceId` as above; default `24h`).
+
+```json
+{
+  "deviceId": "gh-01",
+  "range": "24h",
+  "from": "2026-11-25T10:15:00.000Z",
+  "to": "2026-11-26T10:15:00.000Z",
+  "count": 2880,
+  "stats": {
+    "airTemp": { "min": 24.1, "max": 33.4, "avg": 28.62, "count": 2875 },
+    "humidity": { "min": 52, "max": 88.5, "avg": 70.1, "count": 2875 },
+    "soilMoisture": { "min": 31, "max": 64, "avg": 47.3, "count": 2880 },
+    "lux": { "min": 0, "max": 41200, "avg": 9800.5, "count": 2880 }
+  }
+}
+```
+
+`count` = readings in the window; each sensor's `count` = readings where it had a value. Without data the values are `null` and counts 0. 400 for an invalid `range`.
+
+### GET /api/thresholds · PUT /api/thresholds
+
+The greenhouse's alert limits (`?deviceId=` optional, as above). Same bodies and rules as `GET/PUT /api/devices/:id/thresholds` below. 404 before any device exists.
 
 ### GET /api/devices
 
 200 → `Device[]`, sorted by `id`.
 
-```json
-[{ "id": "gh-01", "name": "gh-01", "online": true, "lastSeen": "2026-11-09T10:15:00.000Z", "createdAt": "2026-11-09T09:00:00.000Z", "telemetryIntervalSec": 5, "reportedFanOnTemp": 32, "reportedFanOffTemp": 28, "reportedFanThresholdsAt": "2026-11-09T09:00:05.000Z" }]
-```
-
 ### PATCH /api/devices/:id
 
-Renames the greenhouse (the title in the app). The `id` (MQTT topic) never changes.
+Renames the greenhouse (the title in the app). The `id` never changes.
 
 ```json
 { "name": "Greenhouse 01" }
@@ -219,13 +315,12 @@ The name is trimmed and must be 1–40 characters without control characters (ne
 
 ### GET /api/devices/:id/latest
 
-200 → the device, its newest reading (`null` if none yet) and its most recent confirmed fan change (`lastFanChange`, a `FanState`, or `null`). 404 if the device is unknown.
+200 → the device and its newest reading (`null` if none yet). 404 if the device is unknown.
 
 ```json
 {
-  "device": { "id": "gh-01", "name": "gh-01", "online": true, "lastSeen": "2026-11-09T10:15:00.000Z", "createdAt": "2026-11-09T09:00:00.000Z", "telemetryIntervalSec": 5, "reportedFanOnTemp": 32, "reportedFanOffTemp": 28, "reportedFanThresholdsAt": "2026-11-09T09:00:05.000Z" },
-  "reading": { "id": 1234, "deviceId": "gh-01", "ts": "2026-11-09T10:15:00.000Z", "airTemp": 27.4, "humidity": 61.2, "soilMoisture": 43, "soilRaw": 2310, "lux": 812.5, "fanOn": false, "fanMode": "auto", "rssi": -61 },
-  "lastFanChange": { "deviceId": "gh-01", "ts": "2026-11-09T09:42:10.000Z", "fanOn": false, "fanMode": "auto", "airTemp": 27.9 }
+  "device": { "id": "gh-01", "name": "gh-01", "online": true, "lastSeen": "2026-11-09T10:15:00.000Z", "createdAt": "2026-11-09T09:00:00.000Z", "telemetryIntervalSec": 30 },
+  "reading": { "id": 1234, "deviceId": "gh-01", "ts": "2026-11-09T10:15:00.000Z", "airTemp": 27.4, "humidity": 61.2, "soilMoisture": 43, "soilRaw": 2310, "lux": 812.5, "rssi": -61 }
 }
 ```
 
@@ -265,43 +360,6 @@ Each point gives `avg`, `min` and `max` (rounded to 2 decimals) and `count` (raw
 
 400 `VALIDATION_ERROR` for a missing or invalid `metric`/`range`. 404 for an unknown device.
 
-### GET /api/devices/:id/fan-activity?range=
-
-How long the fan ran, per bucket (History "Fan activity" and "Fan was on").
-
-| Query | Required | Values |
-|---|---|---|
-| range | no (default `24h`) | `24h` · `7d` · `30d` |
-
-Buckets are aligned to **Asia/Manila** time and always all present (zeros included), oldest first; the last one contains "now":
-
-| range | buckets | bucketSec |
-|---|---|---|
-| 24h | 24 × 1 hour | 3600 |
-| 7d | 28 × 6 hours (00/06/12/18 h) | 21600 |
-| 30d | 30 × 1 day (Manila midnight) | 86400 |
-
-Time-weighted from readings: a reading with `fanOn: true` counts until the next reading, but at most `3 × telemetryIntervalSec + 2 s`, so time while the device was offline never counts as running. A bucket never exceeds its length (or the elapsed part of the current bucket).
-
-200:
-
-```json
-{
-  "deviceId": "gh-01",
-  "range": "24h",
-  "from": "2026-11-08T14:00:00.000Z",
-  "to": "2026-11-09T13:20:00.000Z",
-  "bucketSec": 3600,
-  "totalOnSec": 8280,
-  "buckets": [
-    { "ts": "2026-11-08T14:00:00.000Z", "onSec": 0 },
-    { "ts": "2026-11-08T15:00:00.000Z", "onSec": 1260 }
-  ]
-}
-```
-
-400 `VALIDATION_ERROR` for an invalid `range`. 404 for an unknown device.
-
 ### GET /api/devices/:id/heatmap?metric=&days=
 
 Hourly averages per **Asia/Manila** calendar day (History "Temperature by hour, last 7 days").
@@ -312,8 +370,6 @@ Hourly averages per **Asia/Manila** calendar day (History "Temperature by hour, 
 | days | no (default `7`) | 1–30: today plus the previous days |
 
 `rows` has one entry per day, oldest first; `hours[h]` is the average for Manila hour `h` (0–23), rounded to 2 decimals, or `null` without data (including hours later today).
-
-200:
 
 ```json
 {
@@ -340,8 +396,6 @@ Raw readings for live charts (sparklines, "Last 30 minutes"), **oldest first**.
 
 The window is `[now − minutes, now]`. At most **360** readings are returned; longer series are thinned evenly, always keeping the first and the newest reading. Gaps (device offline) are simply missing readings.
 
-200:
-
 ```json
 {
   "deviceId": "gh-01",
@@ -349,7 +403,7 @@ The window is `[now − minutes, now]`. At most **360** readings are returned; l
   "from": "2026-11-09T09:45:00.000Z",
   "to": "2026-11-09T10:15:00.000Z",
   "readings": [
-    { "id": 1200, "deviceId": "gh-01", "ts": "2026-11-09T09:45:02.000Z", "airTemp": 27.1, "humidity": 62.0, "soilMoisture": 43, "soilRaw": 2312, "lux": 790.0, "fanOn": false, "fanMode": "auto", "rssi": -61 }
+    { "id": 1200, "deviceId": "gh-01", "ts": "2026-11-09T09:45:02.000Z", "airTemp": 27.1, "humidity": 62.0, "soilMoisture": 43, "soilRaw": 2312, "lux": 790.0, "rssi": -61 }
   ]
 }
 ```
@@ -366,8 +420,6 @@ Full replacement: send **every** field (use `null` for "no limit").
 
 ```json
 {
-  "fanOnTemp": 31,
-  "fanOffTemp": 27.5,
   "airTempMin": 12,
   "airTempMax": 36,
   "humidityMin": 40,
@@ -383,35 +435,11 @@ Full replacement: send **every** field (use `null` for "no limit").
 
 ```json
 {
-  "thresholds": { "deviceId": "gh-01", "fanOnTemp": 31, "fanOffTemp": 27.5, "airTempMin": 12, "airTempMax": 36, "humidityMin": 40, "humidityMax": 85, "soilMoistureMin": 30, "soilMoistureMax": 80, "luxMin": null, "luxMax": null, "updatedAt": "2026-11-09T10:16:00.000Z" },
-  "deviceSync": "sent"
+  "thresholds": { "deviceId": "gh-01", "airTempMin": 12, "airTempMax": 36, "humidityMin": 40, "humidityMax": 85, "soilMoistureMin": 30, "soilMoistureMax": 80, "luxMin": null, "luxMax": null, "updatedAt": "2026-11-09T10:16:00.000Z" }
 }
 ```
 
-`deviceSync` reports whether `fanOnTemp`/`fanOffTemp` reached the ESP32:
-
-- `"sent"`: a `setFanThresholds` command was published to the device.
-- `"pending"`: the device (or broker) is offline. The thresholds are saved and sent automatically the next time the device comes online.
-
-400 `VALIDATION_ERROR` (see the rules in §1). 404 for an unknown device.
-
-### POST /api/devices/:id/fan
-
-```json
-{ "mode": "on" }
-```
-
-`mode` is `"auto" | "on" | "off"`.
-
-202 Accepted: the command was **sent, not yet confirmed**.
-
-```json
-{ "commandId": "6f1c2a9e-3b0d-4a51-9a39-2f3e7c1d8b44", "deviceId": "gh-01", "mode": "on", "status": "sent" }
-```
-
-The app must **not** show the new mode from this response. The confirmed state arrives as a `fan:state` event (and in the next `telemetry`) once the ESP32 has applied it, usually within a second or two. If nothing arrives within ~10 s, the app should show "not confirmed".
-
-Errors: 400 `VALIDATION_ERROR`, 404 `NOT_FOUND`, 409 `DEVICE_OFFLINE` (nothing is sent), 503 `BROKER_UNAVAILABLE`.
+The thresholds are only used by the backend's alert rules; nothing is sent to the device. 400 `VALIDATION_ERROR` (see the rules in §1). 404 for an unknown device.
 
 ### POST /api/devices/:id/soil-calibration
 
@@ -420,14 +448,14 @@ Body `{ "point": "dry" }` or `{ "point": "wet" }`. Sends `calibrateSoil` (§4): 
 202:
 
 ```json
-{ "commandId": "a41f…", "deviceId": "gh-01", "point": "dry", "status": "sent" }
+{ "commandId": "a41f…", "deviceId": "gh-01", "point": "dry", "status": "queued", "delivery": "mqtt" }
 ```
 
-Confirmation is the next telemetry with the new `soilDryMv`/`soilWetMv`. Errors: 400 `VALIDATION_ERROR`, 404 `NOT_FOUND`, 409 `DEVICE_OFFLINE`, 503 `BROKER_UNAVAILABLE`. There's no app UI for this (yet). Use curl, or the serial console (`cal dry` / `cal wet`, docs/firmware.md).
+`delivery` is `"mqtt"` (published on the device's command topic now: it arrives within a second) or `"queued"` (the device is on its HTTPS fallback, or the broker is down: it goes out with its next reading, ≤ 30 s). `status` stays `"queued"`: the command is not applied yet. The device then sends a reading with the new `soilDryMv`/`soilWetMv` right away; that is the confirmation (`device:status`). Errors: 400 `VALIDATION_ERROR`, 404 `NOT_FOUND`, 409 `DEVICE_OFFLINE`. Also available on the serial console (`cal dry` / `cal wet`, docs/firmware.md).
 
 ### GET /api/alerts
 
-Newest first, paginated with a cursor.
+Newest first, paginated with a cursor. Each item carries its SMS status (`sms`, §1).
 
 | Query | Required | Values |
 |---|---|---|
@@ -442,8 +470,8 @@ Newest first, paginated with a cursor.
 ```json
 {
   "items": [
-    { "id": 43, "deviceId": "gh-01", "ts": "2026-11-09T10:20:00.000Z", "type": "recovered", "severity": "info", "metric": "airTemp", "value": 34.1, "limit": null, "message": "Air temperature back in range: 34.1 °C", "readAt": null },
-    { "id": 42, "deviceId": "gh-01", "ts": "2026-11-09T10:15:00.000Z", "type": "above_max", "severity": "warning", "metric": "airTemp", "value": 35.4, "limit": 35, "message": "Air temperature high: 35.4 °C (max 35 °C)", "readAt": null }
+    { "id": 43, "deviceId": "gh-01", "ts": "2026-11-09T10:20:00.000Z", "type": "recovered", "severity": "info", "metric": "airTemp", "value": 34.1, "limit": null, "message": "Air temperature back in range: 34.1 °C", "readAt": null, "sms": { "status": "sent", "at": "2026-11-09T10:20:01.000Z", "detail": null } },
+    { "id": 42, "deviceId": "gh-01", "ts": "2026-11-09T10:15:00.000Z", "type": "above_max", "severity": "warning", "metric": "airTemp", "value": 35.4, "limit": 35, "message": "Air temperature high: 35.4 °C (max 35 °C)", "readAt": null, "sms": { "status": "failed", "at": "2026-11-09T10:15:11.000Z", "detail": "retried after \"no answer within 10 s\"; no answer within 10 s" } }
   ],
   "nextCursor": "42",
   "unreadCount": 5
@@ -455,6 +483,29 @@ Newest first, paginated with a cursor.
 
 400 `VALIDATION_ERROR` for invalid query values.
 
+### POST /api/alerts/test
+
+**Pre-demo check: sends one real test SMS** to every `ALERT_PHONE_NUMBERS` entry. Header `X-Admin-Key: <ADMIN_API_KEY>`. No body.
+
+200:
+
+```json
+{
+  "status": "sent",
+  "dryRun": false,
+  "recipients": ["091••••4567"],
+  "message": "[Greenhouse] Test message: SMS alerts are working (14:32)",
+  "providerResponse": "[{\"message_id\":123,\"recipient\":\"639•••••4567\",\"status\":\"Queued\"}]",
+  "at": "2026-11-26T06:32:00.000Z"
+}
+```
+
+`status` is `"sent"`, `"failed"` (see `providerResponse`) or `"dry_run"` (with `SMS_DRY_RUN=true` nothing is sent). "sent" means the provider accepted it (textbee: queued on the sending phone; Semaphore: accepted); delivery to the recipient is not confirmed. Errors: 401 `UNAUTHORIZED`, 503 `NOT_CONFIGURED` (no `ADMIN_API_KEY`), 409 `SMS_NOT_CONFIGURED` (no numbers), 429 `RATE_LIMITED` (5 per hour). Example:
+
+```powershell
+curl.exe -X POST -H "X-Admin-Key: <ADMIN_API_KEY>" https://<your-service>.onrender.com/api/alerts/test
+```
+
 ### POST /api/alerts/:id/read
 
 No body. 200 → the updated `Alert`. Idempotent: an alert that is already read keeps its original `readAt`. 404 for an unknown id.
@@ -463,15 +514,32 @@ No body. 200 → the updated `Alert`. Idempotent: an alert that is already read 
 
 Optional body `{ "deviceId": "gh-01" }` limits it to one device; with no body, all alerts are marked read.
 
-200:
-
 ```json
 { "updated": 5, "readAt": "2026-11-09T10:30:00.000Z" }
 ```
 
+### GET /api/sms/status
+
+Read-only SMS setup (configured in the server environment, §7) and the 10 newest attempts. Numbers are always masked. `provider` is `SMS_PROVIDER`: `"textbee"` or `"semaphore"` (also shown in a dry run).
+
+```json
+{
+  "provider": "textbee",
+  "dryRun": false,
+  "recipients": ["091••••4567", "091••••4321"],
+  "cooldownMinutes": 30,
+  "dailyCap": 10,
+  "offlineAfterMinutes": 10,
+  "sentLast24h": 2,
+  "recent": [
+    { "id": 7, "at": "2026-11-26T06:32:00.000Z", "kind": "threshold", "deviceId": "gh-01", "alertId": 42, "sensor": "airTemp", "condition": "HIGH", "value": 36.2, "threshold": 35, "message": "[Greenhouse] Air temp HIGH: 36.2C (max 35C) at 14:32", "recipients": ["091••••4567", "091••••4321"], "status": "sent", "providerResponse": "[…]" }
+  ]
+}
+```
+
 ### POST /api/push-tokens
 
-Registers this phone for closed-app push notifications (§6). The app calls it on every start, after the permission is granted, when the server address changes, and when the token rotates. Idempotent.
+Registers this phone for closed-app push notifications (§6). The app calls it on every start, after the permission is granted, and when the token rotates. Idempotent.
 
 ```json
 { "token": "ExponentPushToken[xxxxxxxxxxxxxxxxxxxxxx]", "platform": "android" }
@@ -520,7 +588,7 @@ Setup check: sends a test push to every registered phone, ignoring the preferenc
 ```
 
 - No body: the title is "ETanim" and the text "Test notification: push alerts work on this phone."
-- `{ "preset": "demo" }`: the prototype's sample alert, title "Greenhouse alert" and body "Air temperature 33.1 °C — fan turned on". It looks exactly like a real alert push and opens the Alerts tab when tapped (used by the app's dev-only Demo sheet).
+- `{ "preset": "demo" }`: the prototype's sample alert, title "Greenhouse alert" and body "Air temperature 36.4 °C — above the 35 °C limit" (used by the app's dev-only Demo sheet).
 - Any other `preset`, or unknown fields: 400 `VALIDATION_ERROR`.
 
 200:
@@ -533,9 +601,9 @@ Setup check: sends a test push to every registered phone, ignoring the preferenc
 
 ### Dev-only endpoints (`DEV_TOOLS=true`)
 
-For the app's "Presentation tools" (demos). They exist **only** when the backend runs with `DEV_TOOLS=true` (default `false`); otherwise every `/api/dev/*` path answers 404 `NOT_FOUND` like any unknown route. They change **only the simulator**: scenarios go to the MQTT topic `greenhouse/{deviceId}/sim`, which the real firmware never subscribes to, so real hardware and your stored history can't be affected.
+For the app's "Presentation tools" (demos). They exist **only** when the backend runs with `DEV_TOOLS=true` (default `false`); otherwise every `/api/dev/*` path answers 404 like any unknown route. They change **only the simulator**: a scenario is queued as a `simulate` command (§4) for a device whose readings say `"simulator": true`; the real firmware never gets one (and would ignore it).
 
-`GET /api/dev/status` → `{ "enabled": true, "simulated": ["gh-01"] }`. `simulated` lists devices whose telemetry carried `"simulator": true` within the last 30 s (§4).
+`GET /api/dev/status` → `{ "enabled": true, "simulated": ["gh-01"] }`: devices whose readings carried `"simulator": true` within the last 30 s.
 
 `POST /api/dev/simulate`:
 
@@ -545,176 +613,102 @@ For the app's "Presentation tools" (demos). They exist **only** when the backend
 
 | scenario | Effect on the simulator |
 |---|---|
-| `heatwave` | Air temperature jumps to ≥ 33.1 °C and keeps rising toward 41 °C (fan ON, warning, critical within ~30 s) |
+| `heatwave` | Air temperature jumps above 35 °C and keeps rising toward 40 °C |
 | `drysoil` | Soil moisture drops to 27 % and keeps drying (below the default 30 % limit) |
-| `normal` | Clears both scenarios: air temperature ≤ 27 °C (fan switches off), soil ≥ 60 % |
+| `normal` | Clears both scenarios: air temperature ≤ 27 °C, soil ≥ 60 % |
 
-202 `{ "deviceId", "scenario", "status": "sent" }`. 409 `NOT_SIMULATED` if `deviceId` is not a running simulator (including real hardware: it is never touched), 400 `VALIDATION_ERROR`, 503 `BROKER_UNAVAILABLE`.
+202 `{ "deviceId", "scenario", "status": "queued" }`: it applies with the simulator's next reading. 409 `NOT_SIMULATED` if `deviceId` is not a running simulator, 400 `VALIDATION_ERROR`.
+
 ---
 
 ## 3. Socket.IO events
 
-Connect to the same base URL (`http://<laptop-LAN-IP>:4000`), default path `/socket.io`. The server broadcasts to every connected client; there are no client → server events yet. Use socket.io-client **v4**.
+Connect to the same base URL, default path `/socket.io`, socket.io-client **v4**. The server broadcasts to every connected client; there are no client → server events. Browser clients are checked like REST calls (CORS).
 
 | Event | Payload | When |
 |---|---|---|
 | `telemetry` | `Reading` | Every stored reading |
-| `device:status` | `Device` | A device goes online or offline, is auto-created, is renamed, or reports different fan thresholds or soil calibration (acknowledgement). RSSI/uptime updates alone don't emit it (they arrive with every `telemetry`) |
-| `fan:state` | `FanState` | Confirmed change of `fanOn` or `fanMode` (also for a device's first reading) |
-| `alert` | `Alert` | Every new alert (§5) |
+| `device:status` | `Device` | A device goes online or offline, is auto-created, is renamed, switches transport (MQTT ↔ HTTPS), or reports a different soil calibration (acknowledgement). RSSI/uptime updates alone don't emit it |
+| `alert` | `Alert` | Every new alert (§5), with `sms: null` |
 
-Payloads are the same JSON shapes as in REST (§1). Example `telemetry` payload:
+Payloads are the same JSON shapes as in REST (§1). Marking alerts read does not emit an event.
 
-```json
-{ "id": 1235, "deviceId": "gh-01", "ts": "2026-11-09T10:15:10.000Z", "airTemp": 27.5, "humidity": 61.0, "soilMoisture": 43, "soilRaw": 2309, "lux": 815.0, "fanOn": false, "fanMode": "auto", "rssi": -60 }
-```
-
-Example `alert` payload:
-
-```json
-{ "id": 44, "deviceId": "gh-01", "ts": "2026-11-09T10:25:00.000Z", "type": "offline", "severity": "warning", "metric": null, "value": null, "limit": null, "message": "gh-01 went offline (no data for 17 s, 3 missed intervals)", "readAt": null }
-```
-
-Marking alerts read does not emit an event.
-
-After a (re)connect, the app should refetch `GET /api/devices`, `/latest` and the first page of `/api/alerts`, because events sent while it was disconnected are not replayed.
+After a (re)connect, the app should refetch `GET /api/devices`, `/latest` and the first page of `/api/alerts`, because events sent while it was disconnected are not replayed. The app also **polls** the latest reading every 10 s, so it stays current even without the socket (e.g. behind a proxy that blocks WebSockets).
 
 **Client reconnect policy (the app):**
 - Reconnect with exponential backoff and jitter: 1 s, 2 s, 4 s … capped at 30 s, each ±50 %.
 - Retry immediately when the network changes or the app returns to the foreground.
 - Close the socket while the app is in the background or the phone is offline.
-- After every (re)connect, refetch as above.
 
 ---
 
-## 4. MQTT (ESP32 / simulator ↔ backend)
+## 4. Device ↔ backend (MQTT, HTTPS fallback)
 
-The broker is Mosquitto on the laptop, port 1883. `{deviceId}` uses the same rules as `Device.id`. The app never uses MQTT.
+The ESP32 sends one reading every **30 s** (`intervalSec: 30`). The app never talks to the ESP32 or the broker: only to the backend (REST + Socket.IO).
 
-### greenhouse/{deviceId}/telemetry (device → backend)
-
-QoS 0 or 1, not retained. JSON:
-
-```json
-{
-  "ts": 1762683300000,
-  "airTemp": 27.4,
-  "humidity": 61.2,
-  "soilMoisture": 43,
-  "soilRaw": 2310,
-  "lux": 812.5,
-  "fanOn": false,
-  "fanMode": "auto",
-  "rssi": -61,
-  "intervalSec": 5,
-  "uptimeSec": 3605,
-  "fanOnTemp": 32,
-  "fanOffTemp": 28,
-  "soilDryMv": 2600,
-  "soilWetMv": 1200
-}
+```
+ESP32 ──MQTT/TLS 8883──► EMQX (broker) ──MQTT/TLS──► backend   (main path)
+ESP32 ──HTTPS POST /api/readings──────────────────► backend   (fallback while MQTT is down)
+ESP32 ──HTTPS GET /health every 10 min───────────► backend   (keeps Render's free plan awake)
 ```
 
-With a failed sensor, its values are `null` and `errors` names it:
+### MQTT topics
 
-```json
-{ "ts": 1762683305000, "airTemp": null, "humidity": null, "soilMoisture": 43, "soilRaw": 2310, "lux": 812.5, "fanOn": false, "fanMode": "auto", "rssi": -61, "intervalSec": 5, "fanOnTemp": 32, "fanOffTemp": 28, "soilDryMv": 2600, "soilWetMv": 1200, "errors": ["dht"] }
-```
+Broker: EMQX Serverless (TLS only: `mqtts://<deployment>:8883`; no anonymous access). MQTT 3.1.1. `{deviceId}` = `gh-01` by default.
 
-| Field | Type | Required | Range |
+| Topic | Direction | Payload | QoS / retain |
 |---|---|---|---|
-| ts | integer, epoch **ms** | no | Used only if within 24 h in the past … 60 s in the future of the backend clock; otherwise (e.g. no NTP) the receive time is used |
-| airTemp | number \| null | no (missing = null) | −40–80 |
-| humidity | number \| null | no | 0–100 |
-| soilMoisture | number \| null | no | 0–100 |
-| soilRaw | integer \| null | no | 0–4095 |
-| lux | number \| null | no | 0–200000 |
-| fanOn | boolean | **yes** | actual relay/MOSFET state |
-| fanMode | FanMode | **yes** | current mode |
-| rssi | integer \| null | no | −127–0 |
-| intervalSec | integer | no (recommended) | 1–3600: the device's normal telemetry interval |
-| uptimeSec | integer | no | ≥ 0: seconds since the device booted (a drop means it rebooted). Stored as `Device.uptimeSec/uptimeAt` |
-| simulator | boolean | no | Dev only: `true` from the simulator. The real firmware never sends it. Not stored; used by the dev-only Demo tools to refuse scenarios for real hardware |
-| fanOnTemp / fanOffTemp | number | no (recommended, send both) | 10–50: the fan thresholds the device is **currently using** (its NVS values). This is how a `setFanThresholds` command is acknowledged. |
-| soilDryMv / soilWetMv | integer | no | 0–4095: soil calibration in use, in mV: sensor in air = 0 %, in water = 100 %. This acknowledges `calibrateSoil`. Stored on the Device (`Device.soilDryMv/soilWetMv`) |
-| errors | string[] | no (omit or `[]` when all ok) | Failing sensors: `"dht"` (airTemp + humidity null), `"bh1750"` (lux null), `"soil"` (implausible reading: soilRaw + soilMoisture null), `"soil_cal"` (calibration invalid: soilMoisture null, soilRaw sent). The backend logs changes |
+| `greenhouse/{deviceId}/telemetry` | device → backend | A reading: the JSON body of `POST /api/readings` (§2). Its `deviceId`, if present, must equal the topic's | device publishes QoS 0 (PubSubClient); the backend subscribes with QoS 1. Not retained |
+| `greenhouse/{deviceId}/status` | device → backend | `online` (published on connect) or `offline` (the **Last Will**: the broker publishes it when the device's connection dies without a goodbye) | QoS 1, **retained** |
+| `greenhouse/{deviceId}/command` | backend → device | One command object (below) | QoS 1, **not** retained (an offline device must not get an old command later) |
 
-`soilRaw` from the firmware is the sensor output in **millivolts** (`analogReadMilliVolts`, averaged over 1 s, typically 1000–2800 mV). The simulator sends mV too. The 0–4095 range is kept for compatibility. `soilMoisture` = `(soilDryMv − soilRaw) / (soilDryMv − soilWetMv) × 100`, clamped to 0–100. Capacitive sensors read *lower* when wetter.
+The backend subscribes to `greenhouse/+/telemetry` and `greenhouse/+/status`. Telemetry goes through exactly the same validation, storage, alert rules, SMS, push and Socket.IO pipeline as `POST /api/readings`; invalid telemetry (bad JSON, out of range, another device's id, > 16 kB) is logged and dropped (there is no reply channel). The backend's broker connection reconnects forever with backoff (1 s … 30 s); while it is down, the ESP32's HTTPS fallback keeps readings flowing.
 
-- Unknown fields are ignored. Invalid messages (bad JSON, out of range, missing `fanOn`/`fanMode`) are dropped with a warning in the backend log.
-- Recommended interval: **5–10 s**. Always send `intervalSec`, which drives offline detection.
-- The device **should publish telemetry immediately** after applying a command or after the hysteresis switches the fan, so confirmations are fast. These extra messages don't change `intervalSec`.
-- **Fan fail-safe (firmware):** in `auto`, if the device has had no valid air temperature for 60 s, it turns the fan **on** and keeps it on until a valid reading returns. So `fanOn: true` with `airTemp: null` and `errors: ["dht"]` is expected, not a bug.
+**Recommended EMQX authorization** (docs/setup-emqx.md): the device login may publish only `greenhouse/gh-01/telemetry` and `greenhouse/gh-01/status` and subscribe only `greenhouse/gh-01/command`; the backend login may subscribe `greenhouse/+/telemetry`, `greenhouse/+/status` and publish `greenhouse/+/command`.
 
-### greenhouse/{deviceId}/status (device → backend)
+### HTTPS fallback and keep-awake
 
-Plain-text payload `online` or `offline`, **retained**, QoS 1.
+- When the ESP32 isn't connected to the broker (blocked port 8883, EMQX down, wrong login) it sends the same reading to `POST /api/readings` instead, and retries MQTT with backoff (10 s … 2 min). A failed MQTT publish is re-sent over HTTPS at once. Never both: one reading = one transport.
+- While on MQTT it sends `GET /health` every **10 min** (Render's free plan sleeps after 15 min without HTTP requests; outgoing MQTT doesn't count). A failed ping is retried after 1 min (a cold start takes ~1 min).
+- `Device.transport` records which path the latest reading used.
 
-- On connect, set the MQTT Last Will to this topic with payload `offline`, retained, QoS 1.
-- Right after connecting, publish `online` (retained). The firmware's MQTT library (PubSubClient) can only publish QoS 0, so its `online` is QoS 0 retained, which is fine. Its Last Will is QoS 1.
-- Before a planned shutdown, publish `offline` (retained), then disconnect cleanly. A clean disconnect does **not** trigger the Last Will.
+### Commands (backend → device)
+
+- **Device on MQTT** (its latest reading came over MQTT and no Last Will since): the command is published on its command topic at once.
+- **Otherwise** (HTTPS fallback, broker down, a failed publish): it waits on the backend (in memory, up to **120 s**) and goes out **once**: in the `commands` array of the response to the device's next `POST /api/readings`, or, if its next reading arrives over MQTT, published right after it. A newer command of the same type replaces a pending one. A backend restart drops pending commands.
+
+**calibrateSoil**: the device stores its **current** averaged soil reading (mV) in NVS, as the dry point (`"dry"`, sensor in air = 0 %) or the wet point (`"wet"`, sensor in water = 100 %), then sends a reading right away with the new `soilDryMv`/`soilWetMv` (the confirmation). If the current reading is invalid, it ignores the command and logs why.
+
+```json
+{ "id": "a41f…", "type": "calibrateSoil", "point": "dry", "issuedAt": "2026-11-26T10:14:40.000Z" }
+```
+
+**simulate** (dev simulator only): `{ "id", "type": "simulate", "scenario": "heatwave" | "drysoil" | "normal", "issuedAt" }`.
+
+- A device must ignore a command type it doesn't know, or with invalid values.
+- **Stale commands.** A device must ignore a command whose `issuedAt` is more than **150 s** in the past, if its clock is set (NTP).
 
 ### Online / offline
 
-A device becomes **online** when the backend receives telemetry or a live `online` status from it.
+A device is **online** from its first reading (either transport). It becomes **offline** when:
+- no reading arrives for **3 intervals + 2 s** (`3 × intervalSec + 2`, 92 s at 30 s; `OFFLINE_AFTER_SEC`, default 90 s, if it never sent `intervalSec`). The backend checks every 2 s. Silence is counted only since the backend started: after a restart (e.g. a Render cold start), devices get a full window before being marked offline; or
+- its **Last Will** (`offline` on its status topic, live) arrives and no reading follows within **one interval + 10 s** (40 s at 30 s). The grace lets the ESP32 switch to HTTPS without an offline/online pair. The broker sends the Last Will about 1.5 × the keep-alive (20 s) after the connection silently dies, or at once when the socket closes.
 
-**Retained status messages.** The broker replays these every time the backend (re)subscribes, and they can be days old, so the backend treats them with care:
+**Retained** status messages (replayed by the broker on every subscribe, possibly days old) never change presence and never create a device. A live `online` only cancels a pending Last Will.
 
-- A retained `online` is ignored: the device may have died before its Last Will fired.
-- A retained `offline` is applied, unless the backend has received live data from that device since the current broker connection started. In that case the retained message is older than what we know.
-- Retained messages **never auto-register** a device, so old test devices don't come back after a restart.
-- An empty retained payload (the retained message was cleared) is ignored.
-
-To remove an old device's retained status from the broker: `mosquitto_pub -h localhost -t greenhouse/<id>/status -r -n`. Here `-r -n` means retained with an empty payload, which deletes it.
-
-It becomes **offline** when either of these happens:
-
-1. The status topic receives `offline`: the Last Will (connection lost) or a planned shutdown. A retained `offline` is applied as described above.
-2. No message arrives for **3 telemetry intervals + 2 s** (`3 × intervalSec + 2`, e.g. 17 s at 5 s). If the device never sent `intervalSec`, the fallback is `OFFLINE_AFTER_SEC` (default 90 s). The backend checks every 2 s. Silence is counted only while the backend is connected to the broker: after a backend restart or a broker outage, devices get a full window to report before being marked offline.
-
-Each online→offline transition emits `device:status` and creates **one** `offline` alert. Each offline→online transition emits `device:status`, creates one `online` info alert, and re-sends the fan thresholds. `offline`/`online` alerts are only created for devices that have sent live data before, never for a device that was just registered.
-
-### greenhouse/{deviceId}/command (backend → device)
-
-QoS 1, not retained. JSON with a unique `id` (UUID) and a `type`. The device should subscribe to it with QoS 1.
-
-**setFanMode**
-
-```json
-{ "id": "6f1c2a9e-3b0d-4a51-9a39-2f3e7c1d8b44", "type": "setFanMode", "mode": "on", "issuedAt": "2026-11-09T10:15:00.000Z" }
-```
-
-**setFanThresholds**: the device validates the values (10–50 °C, on − off ≥ 1) and stores them in NVS.
-
-```json
-{ "id": "0b8e…", "type": "setFanThresholds", "fanOnTemp": 31, "fanOffTemp": 27.5, "issuedAt": "2026-11-09T10:16:00.000Z" }
-```
-
-The backend sends `setFanThresholds` after `PUT /thresholds` (if the device is online) and **every time a device comes online**, so the device copy always matches the backend's. The device confirms by applying the change and publishing telemetry that includes the new `fanOnTemp`/`fanOffTemp`; there is no separate ack topic. The backend stores these as `Device.reportedFanOnTemp/OffTemp` and emits `device:status` when they change.
-
-**calibrateSoil**: the device stores its **current** averaged soil reading (mV) in NVS, as the dry point (`"dry"`, sensor in air = 0 %) or the wet point (`"wet"`, sensor in water = 100 %). It confirms with telemetry that includes the new `soilDryMv`/`soilWetMv`. If the current reading is invalid, the device ignores the command and logs why.
-
-```json
-{ "id": "a41f…", "type": "calibrateSoil", "point": "dry", "issuedAt": "2026-11-09T10:17:00.000Z" }
-```
-
-An invalid command (unknown `type`, values out of range) must be ignored by the device.
-
-**Stale commands.** A device must ignore a command whose `issuedAt` is more than **30 s** in the past, if its clock is set (NTP). This matters after a broker or Wi-Fi outage: a QoS 1 command can be delivered late, and an old "fan on" shouldn't surprise anyone. The backend answers `503 BROKER_UNAVAILABLE` if the broker doesn't acknowledge a command within 5 s. The simulator follows this rule.
-
-The backend reconnects to the broker forever, with exponential backoff and jitter (1 s → 30 s), and subscribes again on every connect.
+Each online→offline transition emits `device:status` and creates **one** `offline` alert; each offline→online transition emits `device:status` and creates one `online` info alert. `offline`/`online` alerts are only created for devices that have sent readings before.
 
 ### Auto-registration
 
-The first valid **live** message (not a retained replay) for an unknown `{deviceId}` creates the device (name = id) with default thresholds.
+The first valid reading for an unknown `deviceId` creates the device (name = id) with default thresholds.
 
 ### Data retention
 
-Raw readings older than `READINGS_RETENTION_DAYS` (default **30**, matching the longest history range) are deleted once a day, starting 1 min after the backend starts. Alerts, fan events and thresholds are kept.
+Raw readings older than `READINGS_RETENTION_DAYS` (default **30**, matching the longest history range) are deleted once a day, starting 1 min after the backend starts. Alerts, SMS attempts and thresholds are kept.
 
 ### Dev simulator
 
-`npm run sim` (in `backend/`) acts as device `gh-01` on these exact topics and obeys these commands, using the same fan hysteresis as the firmware. Run `npm run sim -- --help` for the options.
+`npm run sim` (in `backend/`) acts as device `gh-01` like the firmware: with `MQTT_URL` set (backend/.env or `--mqtt-url`) it publishes telemetry, retained `online` status with the Last Will `offline`, obeys the command topic, falls back to HTTPS while the broker is unreachable and pings `/health` every 10 min; without it, it posts with `X-Device-Key`. Ctrl+C drops the connection without a goodbye, so the broker sends the Last Will. `npm run sim -- --help` lists the options (`--transport http`, `--url` targets a deployed backend).
 
 ---
 
@@ -738,7 +732,7 @@ Example with `airTempMax` = 35: 35.1 °C is a warning, 38 °C is critical, and t
 **No spam.** A breach starts an *episode* that lasts until the value is back inside the limit by the deadband.
 
 - **One alert per episode.** While the episode lasts, a new alert is created only when the severity **rises** (warning → critical). Falling back to warning creates nothing.
-- **Cooldown** (`ALERT_COOLDOWN_MIN`, default 15 min). A new episode is announced only if the last breach alert for that metric is at least 15 min old, **or** the new severity is higher than that alert's. Otherwise the episode stays silent. If it is still breached once the cooldown has passed, it is announced then.
+- **Cooldown** (`ALERT_COOLDOWN_MINUTES`, default 30). A new episode is announced only if the last breach alert for that metric is at least that old, **or** the new severity is higher than that alert's. Otherwise the episode stays silent. If it is still breached once the cooldown has passed, it is announced then.
 - **Recovered.** When an announced episode ends, one `recovered` info alert is created. A silent episode ends silently.
 - Alert state is rebuilt from the alert table after a backend restart, so a restart doesn't re-alert an open episode.
 
@@ -746,14 +740,14 @@ Changing thresholds takes effect on the next reading. Removing a limit (setting 
 
 ---
 
-## 6. Push notifications (closed app)
+## 6. Push notifications (closed app, Android)
 
 Every new alert (§5) is sent two ways:
 
 1. **App open:** the `alert` Socket.IO event (§3). The app shows a toast and refreshes the list and badge. A push that arrives while the app is in the foreground goes to the notification shade silently (no banner or sound), to avoid showing it twice.
-2. **App closed or in the background:** a push via backend → Expo Push Service → FCM → Android. This needs internet on the laptop.
+2. **App closed or in the background:** a push via backend → Expo Push Service → FCM → Android (development or release build; not Expo Go, not the web build).
 
-An alert is pushed when `enabled` is true and its severity ≥ `minSeverity` (`info` < `warning` < `critical`). With the default (`warning`), `recovered` and `online` alerts are not pushed. Recoveries are `info` and `offline` is `warning`. The cooldown and episodes of §5 already limit how often this happens.
+An alert is pushed when `enabled` is true and its severity ≥ `minSeverity` (`info` < `warning` < `critical`). With the default (`warning`), `recovered` and `online` alerts are not pushed.
 
 Push message (Expo format):
 
@@ -770,60 +764,65 @@ Push message (Expo format):
 }
 ```
 
-- `title` is always "Greenhouse alert" (the same for every severity). `body` is `Alert.message`, which already says "very high"/"very low" for critical alerts.
-- `channelId` `greenhouse-alerts` is the Android channel the app creates, named "Greenhouse alerts" (high importance, sound, vibration, shown on the lock screen). `priority: high` lets FCM wake a phone in Doze.
-- `data.url` is the app route to open on tap. The app accepts only `/alerts`. Tapping the notification opens the Alerts tab, also when the app was killed.
+- `title` is always "Greenhouse alert". `body` is `Alert.message`.
+- `channelId` `greenhouse-alerts` is the Android channel the app creates (high importance, sound, vibration, lock screen). `priority: high` lets FCM wake a phone in Doze.
+- `data.url` is the app route to open on tap. The app accepts only `/alerts`.
 - `ttl` is 24 h: a phone that is off longer than that doesn't get stale alerts.
 
-**Clean-up.** Messages are sent in chunks of up to 100. If a push ticket, or a receipt (checked about 15 min later), says `DeviceNotRegistered`, that token is deleted. Other errors are logged. A failed request (no internet) is logged and never blocks alert creation.
+**Clean-up.** Messages are sent in chunks of up to 100. If a push ticket, or a receipt (checked about 15 min later), says `DeviceNotRegistered`, that token is deleted. Other errors are logged. A failed request never blocks alert creation.
 
 **Backend env.** `PUSH_ENABLED=false` turns sending off. `EXPO_ACCESS_TOKEN` is needed only if "Enhanced push security" is on in the Expo project.
 
 ---
 
-## 7. SMS alerts (owner's phone)
+## 7. SMS alerts
 
-For the situations that need action, the backend also sends **one SMS to the owner's number**. It needs internet on the laptop and credit with the SMS provider, and it works only while the backend runs. Push notifications (§6) stay the everyday channel; SMS is for emergencies.
+The **backend** texts the numbers in `ALERT_PHONE_NUMBERS` through the provider in `SMS_PROVIDER`:
+- **`textbee`** (default, textbee.dev): an Android phone running the textbee app sends the SMS from its own SIM. The sender is that phone's number. The phone must be on, online and have load; while it is asleep or offline the SMS waits on textbee's side.
+- **`semaphore`** (semaphore.co): a Philippine SMS service, paid per SMS, sending from a registered sender name.
 
-**What is sent** (only when `enabled` and a number is saved):
+API keys live only in the server environment: never sent to the app, never returned by the API, never logged.
 
-| Situation | SMS |
+**When** (after the reading is stored; never blocks or fails the reading request):
+
+| Situation | SMS (condition) |
 |---|---|
-| A reading becomes **critical** (`severity: "critical"`, §5) for air temperature, humidity, soil moisture or light | One SMS when it starts. Warnings are push only |
-| Air temperature **critical high** | The same SMS says what the fan is doing, as last **confirmed by the device**: `Fan ON (auto)`, `Fan ON (manual)`, `Fan is OFF (manual). Turn it on in the app!` or `Fan is OFF but should be running. Check it!` |
-| The greenhouse is **offline for more than `offlineAfterMin` minutes** | One SMS (not for an outage older than 24 h). The fan keeps running on its own, and the SMS says so |
-| The situation is **over** | One closing SMS (below) |
+| A reading crosses a threshold, warning or critical: above the max or below the min (§5) | `HIGH` / `LOW`, e.g. `[Greenhouse] Soil moisture LOW: 18% (min 30%) at 14:32` |
+| A silent episode (§5) gets announced after its cooldown | `HIGH` / `LOW` again |
+| The value is back inside the limit, after a texted `HIGH`/`LOW` (≤ 48 h old) | One `NORMAL`: `[Greenhouse] Soil moisture back to normal: 35% at 15:02` |
+| No reading for `SMS_OFFLINE_AFTER_MINUTES` (default 10; outages > 24 h are not announced) | `OFFLINE`: `[Greenhouse] gh-01 OFFLINE: no data for 12 min (last seen 14:05)` |
+| Readings again after a texted outage | One `ONLINE`: `[Greenhouse] gh-01 back ONLINE at 14:20` |
 
-**Closing SMS.** Every announced situation gets exactly one:
+**Limits.**
+- **Cooldown:** no repeat SMS for the same sensor + condition (e.g. air temp `HIGH`) within `ALERT_COOLDOWN_MINUTES` (default 30). A crossing inside the cooldown is recorded with status `skipped_cooldown`. Severity changes inside an episode (warning → critical) are not new crossings.
+- **Daily cap:** at most `SMS_DAILY_CAP` (default 10) real alert SMS per rolling 24 h; over it → `skipped_daily_cap`. Test SMS don't count.
+- A failed SMS starts no cooldown (the next crossing tries again); a failed offline/online SMS is retried at most every 15 min.
 
-- Humidity, soil, light: when the `recovered` alert (§5) arrives.
-- Air temperature: **"stabilized" = the fan switched OFF** after the temperature came back in range (`Fan turned OFF`). While the temperature is back in range but the fan still runs in auto mode, nothing is sent. If the fan is held on by hand, or is already off, the closing SMS is sent at once and says `Fan still ON (manual)` / `Fan is OFF`. If the fan hasn't switched off 2 hours after the recovery, it closes with `Fan still ON (auto)`.
-- Offline: when the device is back online.
+**Every attempt is stored** (table `SmsAlert`): `id`, `sensor`, `condition`, `value`, `threshold`, `message`, `recipients` (masked), `status` (`sent` · `failed` · `skipped_cooldown` · `skipped_daily_cap` · `dry_run`), `provider_response` (key removed, numbers masked), `created_at`, plus `kind`, `deviceId` and `alertId` (the in-app alert it belongs to; shown as `Alert.sms`).
 
-**Rules that limit cost and noise:**
+**Provider call** (one request per SMS, all recipients in it). Both providers: timeout **10 s**; **one retry** after a network error, a timeout or an HTTP 5xx (a 4xx or a rejection is final). Retry caveat: if the first request timed out after the provider had accepted it, the SMS can arrive twice.
+- **textbee:** `POST https://api.textbee.dev/api/v1/gateway/send-sms`, header `x-api-key`, JSON `{ "recipients": ["+639…"], "message": "…", "deviceId"?: TEXTBEE_DEVICE_ID, "simSlotIndex"?: TEXTBEE_SIM_SLOT }`. The documented answer is `{ "data": { "success": true, "smsBatchId": "…", "recipientCount": n } }` (or `successCount` / `failureCount`); "sent" here means `success: true` (or `successCount > 0`): queued on the phone. Documented errors: 400 (email not verified, no enabled phone), 401 (key wrong or revoked), 403, 404 (unknown `deviceId`), 429 (plan limit used up); stored with a hint in `provider_response`. A textbee `warning` (e.g. `SMS_PERMISSION_MISSING`) is stored with the attempt.
+- **semaphore:** `POST https://api.semaphore.co/api/v4/messages` (form-encoded: `apikey`, `number` = all recipients comma-separated, `message`, optional `sendername`). The documented answer is one record per number with `status` Queued / Pending / Sent / Failed / Refunded; "sent" here means at least one number was accepted. Its error format is not documented, so any other answer counts as `failed`.
 
-- A situation is announced **once**: no repeats while it stays critical. It is remembered in the database, so a backend restart neither repeats an SMS nor loses the closing one. It exists only if its opening SMS was actually sent, so a failed send is retried by the next critical alert.
-- A situation that has been open for 48 h (offline: 24 h) is closed silently, so a stale "all clear" is never sent.
-- **Daily cap:** at most `SMS_DAILY_CAP` (default 10) alert SMS per rolling 24 hours. Over the cap the SMS is skipped and logged (`status: "skipped"`). Test SMS don't count.
-- Sending never blocks or breaks alert creation; failures are logged and shown as `last` in `GET /api/sms/settings`.
+**Numbers.** Philippine mobiles, normalized to `09XXXXXXXXX` (the form in Semaphore's request examples) and sent to textbee as E.164 `+639XXXXXXXXX` (textbee's recommended format). Accepted in `ALERT_PHONE_NUMBERS`: `09…`, `9…`, `639…`, `+639…`, with spaces/dashes. An invalid entry stops the backend at startup (its position is printed, never the number).
 
-**Texts.** Plain ASCII, at most 160 characters, so every alert is a single message (the degree sign and other special characters would force a 70-character mode). Units are `C`, `%` and `lux`. The device name is shortened to 20 characters. Times are Asia/Manila.
+**Texts.** Plain ASCII, ≤ 160 characters (one SMS, one credit): the degree sign would force a 70-character mode, so temperatures read `36C`. Never starting with "TEST" (Semaphore silently drops those). With textbee the sending SIM's own rates apply. Times are Asia/Manila.
 
-```
-ETanim CRITICAL: Air temp 38.4 C (max 35). Fan ON (auto). Greenhouse 01
-ETanim OK: Air temp back to 28 C. Fan turned OFF. Greenhouse 01
-ETanim CRITICAL: Humidity 97.3 % (max 85). Greenhouse 01
-ETanim ALERT: Greenhouse 01 offline for 12 min (last seen 14:05). The fan keeps running on its own.
-ETanim OK: Greenhouse 01 is back online.
-```
+**Dry run.** `SMS_DRY_RUN=true` (the default) records every attempt as `dry_run` and logs it; the provider is never called. Set `SMS_DRY_RUN=false` (plus the provider's API key) for real SMS; without the key the backend refuses to start.
 
-**Backend env** (`backend/.env`, see `docs/setup-sms.md`):
+**Backend env** (see `backend/.env.example` and docs/setup-sms.md):
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `SMS_PROVIDER` | `console` | `console` = test mode (log only). `semaphore` = real SMS through semaphore.co |
-| `SEMAPHORE_API_KEY` | none | Secret; required with `semaphore`. Never returned by the API, never logged |
+| `ALERT_PHONE_NUMBERS` | empty (no SMS) | Comma-separated PH mobile numbers |
+| `SMS_DRY_RUN` | `true` | `false` = real SMS |
+| `SMS_PROVIDER` | `textbee` | `textbee` or `semaphore` |
+| `TEXTBEE_API_KEY` | none | Secret; required when `SMS_PROVIDER=textbee` and `SMS_DRY_RUN=false` |
+| `TEXTBEE_DEVICE_ID` | textbee's default phone | The phone to send from (textbee app or dashboard) |
+| `TEXTBEE_SIM_SLOT` | the phone's default SIM | `0` = SIM 1, `1` = SIM 2 (0–7) |
+| `SEMAPHORE_API_KEY` | none | Secret; required when `SMS_PROVIDER=semaphore` and `SMS_DRY_RUN=false` |
 | `SEMAPHORE_SENDER_NAME` | account default | Registered sender name (max 11 characters) |
-| `SMS_DAILY_CAP` | `10` | Alert SMS per rolling 24 hours |
-
-The owner's number and the on/off switch are **not** in `.env`: they are set in the app (Settings → SMS alerts) and stored in the backend database. The phone number is stored on the laptop only and never written to logs in full (`+63••••••4567`).
+| `ALERT_COOLDOWN_MINUTES` | `30` | Per sensor + condition (also the in-app alert cooldown) |
+| `SMS_DAILY_CAP` | `10` | Real alert SMS per rolling 24 h |
+| `SMS_OFFLINE_AFTER_MINUTES` | `10` | "Offline" SMS after this much silence |
+| `ADMIN_API_KEY` | none (required in production) | `X-Admin-Key` for `POST /api/alerts/test` |

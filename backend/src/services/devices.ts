@@ -8,6 +8,8 @@ export interface DeviceReport {
   uptimeSec?: number;
   soilDryMv?: number;
   soilWetMv?: number;
+  /** How this reading arrived. */
+  transport?: 'mqtt' | 'https';
 }
 
 export interface PresenceResult {
@@ -20,6 +22,8 @@ export interface PresenceResult {
   seenBefore: boolean;
   /** true when the reported soil calibration differs from the stored one (acknowledgement). */
   calibrationChanged: boolean;
+  /** true when the reading arrived over a different transport than the previous one. */
+  transportChanged: boolean;
 }
 
 /** Prisma data for the reported fields that are present (undefined = not reported). */
@@ -30,6 +34,7 @@ function reportData(report: DeviceReport | undefined, at: Date | null) {
     ...(report.uptimeSec !== undefined && at ? { uptimeSec: report.uptimeSec, uptimeAt: at } : {}),
     ...(report.soilDryMv !== undefined ? { soilDryMv: report.soilDryMv } : {}),
     ...(report.soilWetMv !== undefined ? { soilWetMv: report.soilWetMv } : {}),
+    ...(report.transport !== undefined ? { transport: report.transport } : {}),
   };
 }
 
@@ -58,7 +63,14 @@ export async function setPresence(
         thresholds: { create: {} },
       },
     });
-    return { device, changed: true, created: true, seenBefore: false, calibrationChanged: false };
+    return {
+      device,
+      changed: true,
+      created: true,
+      seenBefore: false,
+      calibrationChanged: false,
+      transportChanged: device.transport !== null,
+    };
   }
   const device = await prisma.device.update({
     where: { id },
@@ -76,33 +88,11 @@ export async function setPresence(
     seenBefore: existing.lastSeen !== null,
     calibrationChanged:
       existing.soilDryMv !== device.soilDryMv || existing.soilWetMv !== device.soilWetMv,
+    transportChanged: existing.transport !== device.transport,
   };
 }
 
-/**
- * Records the fan thresholds the device reports using. Returns the updated
- * device only when the values changed (so callers emit device:status once).
- */
-export async function updateReportedFanThresholds(
-  device: Device,
-  fanOnTemp: number,
-  fanOffTemp: number,
-  at: Date,
-): Promise<Device | null> {
-  if (device.reportedFanOnTemp === fanOnTemp && device.reportedFanOffTemp === fanOffTemp) {
-    return null;
-  }
-  return prisma.device.update({
-    where: { id: device.id },
-    data: {
-      reportedFanOnTemp: fanOnTemp,
-      reportedFanOffTemp: fanOffTemp,
-      reportedFanThresholdsAt: at,
-    },
-  });
-}
-
-/** Renames a device. The id (MQTT topic) never changes. */
+/** Renames a device. The id (the deviceId the ESP32 sends) never changes. */
 export function renameDevice(id: string, name: string): Promise<Device> {
   return prisma.device.update({ where: { id }, data: { name } });
 }
@@ -121,7 +111,35 @@ export async function getDeviceOr404(id: string): Promise<Device> {
   return device;
 }
 
-/** Extra slack on top of 3 intervals for network/broker jitter. */
+/**
+ * The device a single-greenhouse endpoint (/api/readings/latest, /api/stats, …)
+ * refers to: `requested` if given (404 if unknown), otherwise `defaultId` if it
+ * exists, otherwise the first device by id. null = no device has reported yet.
+ */
+export async function resolveDevice(
+  requested: string | undefined,
+  defaultId: string,
+): Promise<Device | null> {
+  if (requested !== undefined) return getDeviceOr404(requested);
+  return (
+    (await prisma.device.findUnique({ where: { id: defaultId } })) ??
+    (await prisma.device.findFirst({ orderBy: { id: 'asc' } }))
+  );
+}
+
+/**
+ * Marks the device offline unless a reading arrived after `since` (used after its
+ * MQTT Last Will, once the grace period has passed). Returns the device if it flipped.
+ */
+export async function markOfflineIfSilentSince(id: string, since: Date): Promise<Device | null> {
+  const { count } = await prisma.device.updateMany({
+    where: { id, online: true, OR: [{ lastSeen: null }, { lastSeen: { lte: since } }] },
+    data: { online: false },
+  });
+  return count === 1 ? prisma.device.findUnique({ where: { id } }) : null;
+}
+
+/** Extra slack on top of 3 intervals for network jitter. */
 const OFFLINE_GRACE_MS = 2_000;
 
 /** How long a device may stay silent before it is considered offline. */
@@ -132,10 +150,10 @@ export function offlineAfterMs(device: Device, fallbackSec: number): number {
 }
 
 /**
- * Marks online devices offline when silent for 3 telemetry intervals (or
+ * Marks online devices offline when silent for 3 reading intervals (or
  * `fallbackSec` if the interval is unknown). Silence is only counted since
- * `listeningSince` (last MQTT connect): while the backend was down or the broker
- * unreachable it could not have received anything. Returns the devices that flipped.
+ * `listeningSince` (the backend's start): while the backend was down (or asleep
+ * on Render) it could not have received anything. Returns the devices that flipped.
  */
 export async function markStaleDevicesOffline(
   now: Date,

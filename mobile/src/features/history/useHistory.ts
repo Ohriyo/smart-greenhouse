@@ -35,19 +35,6 @@ export function useHistory(
   });
 }
 
-/** How long the fan ran per bucket (Manila-aligned) for a range. */
-export function useFanActivity(deviceId: string | undefined, range: HistoryRange) {
-  const { apiUrl, ready } = useServer();
-  return useQuery({
-    queryKey: ['fanActivity', apiUrl, deviceId, range] as const,
-    enabled: ready && !!deviceId,
-    queryFn: ({ signal }) => api.fanActivity(deviceId ?? '', range, signal),
-    staleTime: FRESHNESS[range],
-    refetchInterval: FRESHNESS[range],
-    placeholderData: (previous) => previous,
-  });
-}
-
 /** Hourly averages of the last 7 Manila days (heatmap). Changes slowly. */
 export function useHeatmap(deviceId: string | undefined, metric: AlertMetric) {
   const { apiUrl, ready } = useServer();

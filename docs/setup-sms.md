@@ -1,77 +1,87 @@
 # SMS alerts
 
-The backend sends **one SMS to the owner's phone** when something needs action: a critical reading (air temperature, humidity, soil moisture, light), or the greenhouse being offline for more than N minutes. For air temperature it also says what the fan is doing, and it sends a closing SMS when the temperature has stabilized and the fan switched off. The exact rules and texts are in [api-contract.md §7](api-contract.md).
+The **backend** texts every number in `ALERT_PHONE_NUMBERS` when a reading crosses a threshold, once more when it is back to normal, and when the greenhouse goes offline. The exact rules and texts are in [api-contract.md §7](api-contract.md). Everything is set in the server environment (Render → your service → **Environment**, or `backend/.env` locally). The app only shows the status (Settings → SMS alerts) and the SMS result of each alert.
 
-Push notifications ([setup-push.md](setup-push.md)) stay the everyday alert. SMS is for emergencies.
+Who sends the SMS is set by `SMS_PROVIDER`:
+- **`textbee`** (the default, [textbee.dev](https://textbee.dev)): an Android phone with the textbee app sends the SMS from **its own SIM**. Free plan: 1 phone, 50 SMS a day, 300 a month; the SIM's own rates apply (a text promo keeps it cheap). The SMS comes from that phone's number.
+- **`semaphore`** ([semaphore.co](https://semaphore.co)): a paid Philippine SMS service with a registered sender name ([section 4](#4-alternative-semaphore)).
 
 > **Limits to know about**
-> - The SMS is sent by the **backend on your laptop**, through an SMS service on the internet. If the laptop is off, asleep, or has no internet, **no SMS (and no push) is sent**. The ESP32 itself keeps the fan running.
-> - Every message costs credit with the SMS provider. A daily cap (default 10) protects you from a surprise bill.
+> - The SMS is sent by the backend through the provider. If the backend can't run (Render suspended, database down) no SMS is sent; the ESP32 keeps reading its sensors.
+> - With textbee the **phone is a single point of failure**: off, offline, asleep, no signal or no load → the SMS waits (until the phone wakes) or fails.
+> - A daily cap (`SMS_DAILY_CAP`, default 10 per rolling 24 h) protects the SIM's load and textbee's free plan; test SMS don't count toward it.
 
-## 1. Try it first in test mode (free)
+## 1. Dry run first (free, the default)
 
-Nothing to set up. By default `SMS_PROVIDER=console`: the backend **writes the SMS to its own log instead of sending them**.
+With `SMS_DRY_RUN=true` the backend does everything except calling the provider: each SMS is recorded with status `dry_run` and logged as `[dry run, not sent] SMS to 091••••4567: "…"`. No key needed.
 
-1. Start the backend (`npm run dev` in `backend/`). It prints `SMS provider: console (test mode, messages are only logged)`.
-2. In the app: **Settings → SMS alerts**. Enter the owner's number, switch **SMS alerts** on, tap **Save**.
-3. Tap **Send test SMS**. In the backend window you see:
-   `[test mode, not sent] SMS to +63••••••4567: "ETanim test: SMS alerts are working."`
-4. Check the real situations with the simulator (`npm run sim -- --hot` in `backend/`). When the temperature becomes critical, the log shows the critical SMS with the fan state, and later the closing one.
+1. Set `ALERT_PHONE_NUMBERS`, e.g. `09171234567,09181234567` (also accepted: `+639…`, `639…`, `9…`, with spaces or dashes). An invalid entry stops the backend at startup and names its position (never the number).
+2. Trigger a crossing: with the simulator (`npm run sim -- --hot` in `backend/`, locally) or by lowering a limit in the app (Control → Sensor limits).
+3. The app's Alerts tab shows "SMS dry run (not sent)" on the alert; Settings → SMS alerts lists the recent attempts.
 
-## 2. Send real SMS with Semaphore
+## 2. Real SMS with textbee
 
-[Semaphore](https://semaphore.co) is a Philippine SMS service with a simple API. (The code is built so another provider can be added; ask if you prefer another one.)
+**You need** an Android phone (Android 7 or newer, ideally a spare one) with a SIM that has load or an SMS promo and internet (Wi-Fi is fine; the SIM still needs signal). Avoid a phone that receives bank or one-time codes: the app can upload received texts to textbee.
 
-1. **Create an account** at semaphore.co and **add credit**. Check their current pricing and sender-name rules there. Their documentation says one credit equals one SMS (a message over 160 characters is split in several; ours stay under 160).
-2. **Get your API key** from your Semaphore account.
-3. **Sender name.** Semaphore sends from a *registered* sender name. If your account has none, sending fails ("error will be thrown" in their docs). Register one in your Semaphore account, then put it in `.env` (max 11 characters). If your account already has a default one, you can leave it out.
-4. **Edit `backend/.env`:**
-   ```
-   SMS_PROVIDER=semaphore
-   SEMAPHORE_API_KEY=your-key-here
-   SEMAPHORE_SENDER_NAME=ETANIM
-   SMS_DAILY_CAP=10
-   ```
-   The backend refuses to start with `SMS_PROVIDER=semaphore` and no key, with a clear message.
-5. **Check your setup without sending anything.** In `backend/`:
+1. **Account:** register at <https://app.textbee.dev/register> and **click the link in the verification email**. Sending fails (HTTP 400) until the email is verified.
+2. **App:** on the phone open <https://textbee.dev/download> → **Download APK** (it isn't on the Play Store). Allow *Install unknown apps* for the browser; if Play Protect warns that the app wasn't scanned, textbee's instructions are **More details → Install anyway**.
+   - Android 15+: if the SMS permission is greyed out, long-press the textbee icon → **App info** → **⋮** → **Allow restricted settings**, then **Permissions → SMS → Allow**.
+3. **Link the phone:** in the dashboard (<https://app.textbee.dev/dashboard>) **Add a device → Continue** shows a QR code. In the app: **Get Started → Scan QR Code** → name it → **Register Device** → allow the permissions → **Continue**. The app shows **"You're all set!"** and the **Device ID**.
+4. **API key:** dashboard → **API Keys → Generate API Key** → copy it (shown **once**). It's a secret: only the server environment, never the app, git, chats or screenshots.
+5. **Keep the phone awake** (textbee's guide: <https://textbee.dev/docs/troubleshooting/keep-the-phone-online>): App battery usage **Unrestricted**, notifications allowed, **Sticky notification** on in the app, battery saver off, phone plugged in, never force-stop or "clear all" the app. Samsung, Xiaomi, OPPO, vivo and others need extra steps (in the guide). Turn **receiving SMS** off in the app if you don't need it: received texts count toward the free plan.
+6. **Set the environment** (`backend/.env` locally; Render → Environment → edit, save, Render redeploys):
+
+   | Variable | Value |
+   |---|---|
+   | `SMS_PROVIDER` | `textbee` (the default) |
+   | `ALERT_PHONE_NUMBERS` | `09171234567,09181234567` (the people to text, not the sending phone) |
+   | `TEXTBEE_API_KEY` | your key |
+   | `TEXTBEE_DEVICE_ID` | the Device ID (recommended; empty = textbee picks the phone) |
+   | `TEXTBEE_SIM_SLOT` | dual-SIM only: `0` = SIM 1, `1` = SIM 2 (empty = the phone's default SIM) |
+   | `SMS_DRY_RUN` | `false` |
+
+   With `SMS_DRY_RUN=false` and no key the backend refuses to start and says why.
+7. **Check without sending anything** (locally, with the same values in `backend/.env`):
    ```powershell
+   cd backend
    npm run sms:check
    ```
-   This asks Semaphore whether your key is accepted, how much credit is left and which sender names are registered, and compares them with your `.env`. It sends **no SMS** and costs nothing. Fix anything marked `FAIL`. (Semaphore limits these questions to 2 per minute: don't run it in a loop.)
-6. **Restart the backend** (`Ctrl+C`, then `npm run dev`). It prints `SMS provider: semaphore`.
-7. In the app (Settings → SMS alerts) tap **Send test SMS**. The phone should receive it within seconds.
-8. To go back to test mode at any time, set `SMS_PROVIDER=console` and restart.
+   It asks textbee whether the key works and the phone is linked, enabled, recently heard from, not battery-restricted, and has signal. No SMS, no cost.
+8. **Send one real test SMS** to every number (needs the admin key, Render → Environment → `ADMIN_API_KEY`):
+   ```powershell
+   curl.exe -X POST -H "X-Admin-Key: <ADMIN_API_KEY>" https://<your-service>.onrender.com/api/alerts/test
+   ```
+   Answer `"status":"sent"` = textbee queued it on the phone (check the receiving phone; textbee's dashboard → Messaging → History shows its progress). `"failed"` shows the reason in `providerResponse`. At most 5 test SMS per hour. **Repeat once with the sending phone locked for 15+ minutes** to prove the battery settings work.
 
-**The API key is a secret.** It lives only in `backend/.env`, which git ignores. It is never sent to the app, never returned by the API, and never written to logs or error messages. Don't paste it in chats or commit it.
+## 3. How it behaves
 
-## What you set where
+- **Any crossing:** above the max or below the min, warning or critical, texts once: `[Greenhouse] Soil moisture LOW: 18% (min 30%) at 14:32` (Asia/Manila time).
+- **Cooldown:** the same sensor + condition (e.g. air temp HIGH) is not texted again within `ALERT_COOLDOWN_MINUTES` (default 30). A crossing inside the cooldown is recorded as `skipped_cooldown`.
+- **Back to normal:** one SMS after a texted HIGH/LOW: `[Greenhouse] Soil moisture back to normal: 35% at 15:02`.
+- **Offline:** after `SMS_OFFLINE_AFTER_MINUTES` (default 10) without data, and one SMS when readings return.
+- **Every attempt is stored** (sent / failed / skipped_cooldown / skipped_daily_cap / dry_run) with the provider's answer (key removed, numbers masked).
+- **Never blocks a reading:** the SMS is sent after the reading is stored; a provider timeout (10 s) is retried once, then recorded as failed.
 
-| Setting | Where | Why |
-|---|---|---|
-| Provider, API key, sender name, daily cap | `backend/.env` | Secrets and server settings |
-| Owner's number, on/off, "offline after N minutes" | App: Settings → SMS alerts | Easy to change; stored in the backend database |
+## 4. Alternative: Semaphore
 
-The number must be in international format: `+639171234567`. The app converts `0917 123 4567` for you.
+A paid service (per SMS) that sends from a registered sender name instead of a phone. Create an account at semaphore.co, add credit, register a sender name (max 11 characters; their FAQ says approval takes up to 5 business days and a send without a registered name fails), copy the API key, then set `SMS_PROVIDER=semaphore`, `SEMAPHORE_API_KEY`, optionally `SEMAPHORE_SENDER_NAME`, and `SMS_DRY_RUN=false`. `npm run sms:check` then checks the key, the credit and the sender names (Semaphore allows it about once a minute). Messages starting with "TEST" are silently dropped by Semaphore; ours never start with it.
 
 ## Troubleshooting
 
-The app shows the last result under **Last SMS**, and the backend log has the full reason.
+The app (Settings → SMS alerts, or the alert's details) shows the last result; the Render log has the full reason.
 
 | Message | Meaning / fix |
 |---|---|
-| `npm run sms:check` says `FAIL` | It names the problem: key not accepted, no credit, or a sender name that isn't registered. Fix it in `.env` or your Semaphore account |
-| `Semaphore answered HTTP 401` / `rejected the message` | Wrong or missing API key, or the sender name isn't registered/active. Check `SEMAPHORE_API_KEY` and `SEMAPHORE_SENDER_NAME` |
-| `Could not reach Semaphore` | The laptop has no internet, or Semaphore is down |
-| `Semaphore reports the message as failed` / `refunded` | Their network could not deliver it (wrong number, phone off for too long). Check the number and your credit |
-| `daily limit of N SMS reached` | The safety cap was hit. Raise `SMS_DAILY_CAP` and restart, or wait (it is a rolling 24 hours) |
-| Test SMS: "Save the owner's phone number first" | Enter and save the number first |
-| Test SMS: "Too many test messages" | At most 5 per hour |
-| Nothing arrives, no error | You are still in test mode (`SMS_PROVIDER=console`): look at the backend log |
-| Message arrives late | Provider/network delay. SMS is not instant; the push notification usually is |
-
-## How it behaves (short version)
-
-- **Once per situation:** a critical reading is announced once, not every few seconds. When it's over, one closing SMS follows.
-- **Air temperature:** critical → "Fan ON (auto)" (or "Fan is OFF … Turn it on in the app!" if the fan isn't running). When the temperature is back in range **and the fan switches OFF**, you get "Air temp back to 28 C. Fan turned OFF."
-- **Offline:** after N minutes without data (default 10). The SMS says the fan keeps running on its own. One more SMS when it's back.
-- **A backend restart** doesn't repeat messages or lose the closing one.
+| Backend won't start: `ALERT_PHONE_NUMBERS … position 2` | That entry isn't a PH mobile number (09XXXXXXXXX) |
+| Backend won't start: `TEXTBEE_API_KEY is required when SMS_DRY_RUN=false` | Set the key, or go back to `SMS_DRY_RUN=true` |
+| `HTTP 401 … TEXTBEE_API_KEY is wrong or was revoked` | Generate a new key in the dashboard, update the environment |
+| `HTTP 400 … No enabled device found` / email not verified | Enable the phone in the dashboard; verify the textbee email |
+| `HTTP 404 … TEXTBEE_DEVICE_ID` | The Device ID isn't on this account: copy it again from the dashboard |
+| `HTTP 429 … plan limit` | textbee's free 50/day or 300/month is used up; wait or lower the SMS volume |
+| `sent`, but nothing arrives | The phone is asleep, offline or out of load: check textbee's Messaging → History (stuck at `pending`) and the phone's battery settings |
+| `warning: SMS_PERMISSION_MISSING` | The app lost the SMS permission: allow it again (Android 15+: "Allow restricted settings" first) |
+| `failed` with `no answer within 10 s` | textbee slow or unreachable; retried once. If textbee had accepted the first try, the SMS can arrive twice |
+| `skipped_daily_cap` | The cap was hit. Raise `SMS_DAILY_CAP` (keep it under textbee's 50/day) or wait (rolling 24 h) |
+| Test SMS: `409 SMS_NOT_CONFIGURED` | `ALERT_PHONE_NUMBERS` is empty |
+| Test SMS: `401` / `503 NOT_CONFIGURED` | Wrong `X-Admin-Key` / no `ADMIN_API_KEY` on the server |
+| Status `dry_run`, nothing arrives | `SMS_DRY_RUN` is still `true` |

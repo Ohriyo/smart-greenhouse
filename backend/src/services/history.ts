@@ -33,16 +33,21 @@ export interface HistoryResult {
   points: HistoryPoint[];
 }
 
-// SQLite may return integers as bigint through the driver adapter.
+// Postgres bigint (int8) arrives as a JS bigint through the driver adapter.
 const num = z.union([z.number(), z.bigint()]).transform(Number);
 const RowSchema = z.object({ bucket: num, avg: num, min: num, max: num, count: num });
 
 const round2 = (v: number) => Math.round(v * 100) / 100;
 
 /**
+ * SQL for "epoch milliseconds of Reading.ts" (numeric). Buckets and Manila days
+ * are computed from it, so they line up with the TypeScript helpers.
+ */
+export const TS_EPOCH_MS = Prisma.sql`(extract(epoch from "ts") * 1000)`;
+
+/**
  * Average/min/max per time bucket, computed in SQL. Buckets are aligned to
  * multiples of bucketMs since the epoch; empty buckets are omitted (gaps).
- * Relies on DateTime stored as epoch ms (timestampFormat 'unixepoch-ms').
  */
 export async function getHistory(
   deviceId: string,
@@ -58,10 +63,12 @@ export async function getHistory(
   const col = Prisma.raw(`"${metric}"`);
 
   const rows = await prisma.$queryRaw<unknown[]>`
-    SELECT CAST("ts" / ${bucketMs} AS INTEGER) AS bucket,
-           AVG(${col}) AS avg, MIN(${col}) AS min, MAX(${col}) AS max, COUNT(${col}) AS count
+    SELECT floor(${TS_EPOCH_MS} / ${bucketMs})::bigint AS bucket,
+           avg(${col})::float8 AS avg, min(${col})::float8 AS min, max(${col})::float8 AS max,
+           count(${col})::int AS count
     FROM "Reading"
-    WHERE "deviceId" = ${deviceId} AND "ts" >= ${from} AND "ts" <= ${to} AND ${col} IS NOT NULL
+    WHERE "deviceId" = ${deviceId} AND "ts" >= ${new Date(from)} AND "ts" <= ${new Date(to)}
+      AND ${col} IS NOT NULL
     GROUP BY bucket
     ORDER BY bucket`;
 

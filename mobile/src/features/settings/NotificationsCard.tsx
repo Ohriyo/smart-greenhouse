@@ -21,7 +21,7 @@ import {
   useUpdateNotificationSettings,
 } from '@/features/notifications/queries';
 import { describeError } from '@/services/api';
-import { pushSupport, requestPermission } from '@/services/notifications';
+import { PUSH_PLATFORM, pushSupport, requestPermission } from '@/services/notifications';
 import { useNotificationStore } from '@/store/notificationStore';
 import { useTheme } from '@/theme';
 import type { NotificationSettingsUpdate, Severity } from '@/types/api';
@@ -49,9 +49,25 @@ const SEVERITY_COPY: Record<Severity, { title: string; row: string; detail: stri
 /**
  * "NOTIFICATIONS": the push toggle (Android permission → registration → the server
  * preference) and the minimum severity, which is saved on the backend and applies
- * to every registered phone.
+ * to every registered phone. The web build has no closed-app push.
  */
 export function NotificationsSection() {
+  return PUSH_PLATFORM ? <AndroidNotificationsSection /> : <WebNotificationsCard />;
+}
+
+function WebNotificationsCard() {
+  return (
+    <Card>
+      <ListRow
+        title="Push notifications"
+        subtitle="Available in the Android app. Here, new alerts appear in the Alerts tab."
+        icon="notifications-outline"
+      />
+    </Card>
+  );
+}
+
+function AndroidNotificationsSection() {
   const theme = useTheme();
   const toast = useToast();
   const [support] = useState(pushSupport);
@@ -107,7 +123,7 @@ export function NotificationsSection() {
     });
 
   const subtitle = !support.ok
-    ? 'Not available in Expo Go. Use the development build.'
+    ? support.message
     : permission === 'blocked'
       ? 'Blocked in Android settings'
       : permission !== 'granted'

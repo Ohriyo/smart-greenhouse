@@ -6,7 +6,7 @@ import { IconButton } from './Button';
 import { Text } from './Text';
 
 interface StepperProps {
-  /** Spoken label ("Fan turns ON at"); shown at the left unless `showLabel` is false. */
+  /** Spoken label ("Target"); shown at the left unless `showLabel` is false. */
   label: string;
   value: number;
   onChange: (value: number) => void;

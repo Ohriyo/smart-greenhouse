@@ -23,6 +23,9 @@ function toastTone(alert: Alert): ToastTone {
       : 'info';
 }
 
+/** The SMS for a new alert is sent right after it (contract §3): refetch then to show its status. */
+const SMS_STATUS_REFETCH_MS = 15_000;
+
 /** What may have changed while we weren't listening (contract §3: events aren't replayed). */
 const REFETCH_ON_RECONNECT = new Set(['devices', 'latest', 'alerts', 'thresholds', 'recent']);
 const isLiveQuery = (q: Query) =>
@@ -33,7 +36,7 @@ const isLiveQuery = (q: Query) =>
  * - connects to the saved server (live data of another server is cleared)
  * - pauses while the app is in the background or the phone is offline, and
  *   resumes immediately when it's back (no waiting for the backoff timer)
- * - retries right away when the network changes (e.g. back on home Wi-Fi)
+ * - retries right away when the network changes (e.g. Wi-Fi ↔ mobile data)
  * - after every (re)connect refetches the latest readings, devices and alerts
  * - new alerts: toast + refresh of the alert list and badge
  */
@@ -62,6 +65,9 @@ export function RealtimeBridge() {
       onConnect: () => void queryClient.invalidateQueries({ predicate: isLiveQuery }),
       onAlert: (alert) => {
         void queryClient.invalidateQueries({ queryKey: ['alerts', apiUrl] });
+        setTimeout(() => {
+          void queryClient.invalidateQueries({ queryKey: ['alerts', apiUrl] });
+        }, SMS_STATUS_REFETCH_MS);
         // Slides in from the top; a tap opens the Alerts tab.
         toast.show(alert.message, toastTone(alert), {
           title: alertTitle(alert),
@@ -74,7 +80,11 @@ export function RealtimeBridge() {
   const active = foreground && phoneOnline;
   useEffect(() => {
     if (active) resumeRealtime();
-    else pauseRealtime();
+    else {
+      pauseRealtime();
+      // Polling stops in the background: the next poll decides again what is live.
+      useLiveStore.getState().setPoll('idle');
+    }
     // apiUrl: a new socket starts unpaused; pause it again if needed.
   }, [active, apiUrl, liveHydrated]);
 

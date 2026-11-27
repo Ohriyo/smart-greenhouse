@@ -1,11 +1,10 @@
-import { router } from 'expo-router';
 import { useCallback, useState } from 'react';
 import { RefreshControl, StyleSheet, View } from 'react-native';
 
+import { ServerWaking } from '@/components/greenhouse';
 import { Card, EmptyState, ErrorState, Eyebrow, Screen, Skeleton, Text } from '@/components/ui';
 import { useAlertsQuery } from '@/features/alerts/queries';
 import { HealthRanges } from '@/features/dashboard/HealthRanges';
-import { HomeFanCard } from '@/features/dashboard/HomeFanCard';
 import { HomeHeader } from '@/features/dashboard/HomeHeader';
 import { LiveBanner } from '@/features/dashboard/LiveBanner';
 import { LiveConditions } from '@/features/dashboard/LiveConditions';
@@ -25,7 +24,7 @@ import { useLiveStore } from '@/store/liveStore';
 import { useSettingsStore } from '@/store/settingsStore';
 import { useTheme } from '@/theme';
 
-/** Home: header, status, live conditions, health ranges, live trend, fan, recent alerts. */
+/** Home: header, status, live conditions, health ranges, live trend, recent alerts. */
 export default function HomeScreen() {
   const theme = useTheme();
   const apiUrl = useSettingsStore((s) => s.apiUrl);
@@ -77,15 +76,14 @@ export default function HomeScreen() {
     />
   );
 
-  // --- No server configured ---
+  // --- No server address in this build ---
   if (hydrated && !apiUrl) {
     return (
       <Screen title="ETanim" subtitle="Not connected">
         <EmptyState
           icon="server-outline"
-          title="Set your server address"
-          message="Enter your laptop's address (e.g. http://192.168.1.50:4000) in Settings."
-          action={{ label: 'Open Settings', onPress: () => router.push('/settings') }}
+          title="No server address"
+          message="This build has no server address. Set EXPO_PUBLIC_API_URL (mobile/.env, the EAS build profile or the Vercel project) and build the app again."
         />
       </Screen>
     );
@@ -111,7 +109,7 @@ export default function HomeScreen() {
           <EmptyState
             icon="leaf-outline"
             title="No greenhouse yet"
-            message="Power on the ESP32 or start the simulator (npm run sim in backend/). It appears here automatically."
+            message="Power on the ESP32. The greenhouse appears here after its first reading (it reports every 30 s)."
             action={{ label: 'Refresh', onPress: refresh }}
           />
         </Screen>
@@ -121,6 +119,22 @@ export default function HomeScreen() {
   }
 
   if (!hasReading && latestQuery.isPending) return <HomeSkeleton title={deviceName} />;
+  if (!hasReading && latestQuery.isError) {
+    return (
+      <Screen
+        title={deviceName ?? 'Greenhouse'}
+        subtitle="My greenhouse"
+        refreshControl={refreshControl}
+      >
+        <ErrorState
+          title={errorTitle(latestQuery.error)}
+          message={describeError(latestQuery.error)}
+          onRetry={refresh}
+          retrying={refreshing}
+        />
+      </Screen>
+    );
+  }
 
   return (
     <Screen
@@ -141,8 +155,7 @@ export default function HomeScreen() {
       <LiveStatusCard deviceId={deviceId} thresholds={thresholds} />
       <LiveConditions deviceId={deviceId} thresholds={thresholds} />
       <HealthRanges deviceId={deviceId} thresholds={thresholds} />
-      <LiveTrend deviceId={deviceId} fanOnTemp={thresholds?.fanOnTemp ?? 32} />
-      <HomeFanCard deviceId={deviceId} />
+      <LiveTrend deviceId={deviceId} />
       <RecentAlerts />
     </Screen>
   );
@@ -161,6 +174,7 @@ function HomeSkeleton({ title }: { title?: string }) {
         </View>
       }
     >
+      <ServerWaking loading />
       <View accessible accessibilityLabel="Loading greenhouse data" style={styles.loading}>
         <Skeleton height={120} radius={theme.radii.lg} />
         <View style={styles.row}>

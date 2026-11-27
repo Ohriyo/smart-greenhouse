@@ -3,6 +3,7 @@ export {
   ALERT_CHANNEL_ID,
   configureForegroundPresentation,
   ensureAlertChannel,
+  PUSH_PLATFORM,
   pushSupport,
   refreshPermission,
   registerForPush,

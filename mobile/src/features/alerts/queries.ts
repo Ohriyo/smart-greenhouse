@@ -22,6 +22,9 @@ const FILTERS: Record<AlertFilter, AlertsFilter> = {
 
 const PAGE_SIZE = 30;
 
+/** Fallback refresh when the live socket can't connect (new alerts, SMS status, badge). */
+const ALERTS_REFRESH_MS = 60_000;
+
 /** Every alerts query starts with ['alerts', url] so one invalidation refreshes all. */
 export const alertKeys = {
   all: (url: string | null) => ['alerts', url] as const,
@@ -40,6 +43,7 @@ export function useAlertsQuery(filter: AlertFilter) {
     queryFn: ({ pageParam, signal }) =>
       api.alerts(FILTERS[filter], pageParam, { limit: PAGE_SIZE, signal }),
     getNextPageParam: (last) => last.nextCursor,
+    refetchInterval: ALERTS_REFRESH_MS,
   });
 }
 
@@ -51,6 +55,7 @@ export function useUnreadCount() {
     enabled: ready,
     queryFn: async ({ signal }) =>
       (await api.alerts({ unread: true }, null, { limit: 1, signal })).unreadCount,
+    refetchInterval: ALERTS_REFRESH_MS,
   });
 }
 

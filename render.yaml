@@ -1,0 +1,57 @@
+# Render Blueprint: the backend as a free web service (https://render.com/docs/blueprint-spec).
+# Render Dashboard → New → Blueprint → pick this repository. Values marked
+# `sync: false` are asked for when the Blueprint is created (see README "Deploy").
+services:
+  - type: web
+    name: etanim-api
+    runtime: node
+    plan: free
+    region: singapore # closest to the Philippines; create the Neon project in AWS Singapore too
+    rootDir: backend
+    # Only redeploy when the backend changes (not for app or firmware commits).
+    buildFilter:
+      paths:
+        - backend/**
+    # The free plan has no pre-deploy command, so migrations run at the end of the build.
+    # --include=dev: TypeScript and the Prisma CLI are dev dependencies.
+    buildCommand: npm ci --include=dev && npm run build && npx prisma migrate deploy
+    startCommand: node dist/index.js
+    # Always 200 while the process runs; "db" and "mqtt" report the database and broker.
+    # The ESP32 also GETs it every 10 min so the free service never sleeps.
+    healthCheckPath: /health
+    envVars:
+      # Render sets NODE_ENV=production and PORT itself at runtime.
+      - key: DATABASE_URL # Neon: the POOLED connection string (host contains -pooler)
+        sync: false
+      - key: DIRECT_URL # Neon: the DIRECT connection string (used by migrations)
+        sync: false
+      - key: DEVICE_API_KEY # copy it into firmware/SmartGreenhouse/secrets.h (DEVICE_KEY)
+        generateValue: true
+      - key: ADMIN_API_KEY # for POST /api/alerts/test (X-Admin-Key)
+        generateValue: true
+      - key: CORS_ORIGIN # the Vercel URL of the web app, e.g. https://etanim.vercel.app
+        sync: false
+      - key: MQTT_URL # EMQX: mqtts://<deployment address>:8883 (docs/setup-emqx.md)
+        sync: false
+      - key: MQTT_USERNAME # the backend's EMQX login (not the device's)
+        sync: false
+      - key: MQTT_PASSWORD # secret
+        sync: false
+      - key: ALERT_PHONE_NUMBERS # e.g. 09171234567,09181234567 (empty = no SMS)
+        sync: false
+      - key: SMS_DRY_RUN # "false" = real SMS (needs the provider's API key)
+        value: "true"
+      - key: SMS_PROVIDER # textbee (an Android phone's SIM) or semaphore
+        value: textbee
+      - key: TEXTBEE_API_KEY # from the textbee dashboard (secret)
+        sync: false
+      - key: TEXTBEE_DEVICE_ID # the phone's Device ID (textbee app or dashboard)
+        sync: false
+      - key: TEXTBEE_SIM_SLOT # optional: 0 = SIM 1, 1 = SIM 2
+        sync: false
+      - key: ALERT_COOLDOWN_MINUTES
+        value: "30"
+      - key: SMS_DAILY_CAP
+        value: "10"
+      - key: LOG_LEVEL
+        value: info

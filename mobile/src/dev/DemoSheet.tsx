@@ -28,7 +28,7 @@ import type { DevStatus, SimScenario } from '@/types/api';
 /** The prototype's sample notification (the backend's `demo` preset sends the same text). */
 const DEMO_PUSH = {
   title: 'Greenhouse alert',
-  body: 'Air temperature 33.1 °C — fan turned on',
+  body: 'Air temperature 36.4 °C — above the 35 °C limit',
 } as const;
 
 interface ScenarioRow {

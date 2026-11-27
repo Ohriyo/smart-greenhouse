@@ -10,7 +10,7 @@
 // adds nothing once the full window is filled.
 import { parseArgs } from 'node:util';
 import { z } from 'zod';
-import { prisma } from '../src/db.js';
+import { closeDatabase, prisma } from '../src/db.js';
 import { DeviceIdSchema } from '../src/domain/schemas.js';
 
 const { values: raw } = parseArgs({
@@ -79,9 +79,6 @@ function weather(day: number) {
   return w;
 }
 
-const FAN_ON = 32;
-const FAN_OFF = 28;
-
 // ---------- Main ----------
 
 async function main() {
@@ -110,12 +107,11 @@ async function main() {
     return;
   }
 
-  // Walk forward in time so soil drying / watering / fan state are continuous.
+  // Walk forward in time so temperature and soil drying / watering are continuous.
   const start = Math.ceil(windowStart / intervalMs) * intervalMs;
   let airTemp = 22;
   let humidity = 75;
   let soil = 60;
-  let fanOn = false;
   let rssi = -60;
   const rows: {
     deviceId: string;
@@ -125,8 +121,6 @@ async function main() {
     soilMoisture: number;
     soilRaw: number;
     lux: number;
-    fanOn: boolean;
-    fanMode: string;
     rssi: number;
   }[] = [];
 
@@ -137,12 +131,10 @@ async function main() {
     const sun = daylight(h);
 
     const outside = 26 + w.tempShift + 4.5 * Math.sin((2 * Math.PI * (h - 9)) / 24);
-    const target = outside + 7 * sun * w.cloud - (fanOn ? 4 : 0);
+    const target = outside + 5 * sun * w.cloud;
     airTemp += (target - airTemp) * (1 - Math.exp(-dt / 900)) + noise(0.15);
-    if (airTemp >= FAN_ON) fanOn = true;
-    else if (airTemp <= FAN_OFF) fanOn = false;
 
-    const rhTarget = clamp(92 - (airTemp - 22) * 3 - (fanOn ? 6 : 0), 35, 98);
+    const rhTarget = clamp(92 - (airTemp - 22) * 3, 35, 98);
     humidity = clamp(
       humidity + (rhTarget - humidity) * (1 - Math.exp(-dt / 1200)) + noise(0.6),
       0,
@@ -167,8 +159,6 @@ async function main() {
       soilMoisture: round(soil, 1),
       soilRaw: Math.round(3200 - (soil / 100) * (3200 - 1350) + noise(8)),
       lux: round(lux, 1),
-      fanOn,
-      fanMode: 'auto',
       rssi: Math.round(rssi),
     });
   }
@@ -190,4 +180,4 @@ main()
     console.error(err);
     process.exitCode = 1;
   })
-  .finally(() => void prisma.$disconnect());
+  .finally(() => void closeDatabase());

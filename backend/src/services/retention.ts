@@ -4,22 +4,22 @@ import { createLogger } from '../lib/logger.js';
 const log = createLogger('retention');
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-/** Rows per DELETE: short transactions, so MQTT ingest isn't blocked for long. */
+/** Rows per DELETE: short transactions, so reading ingest isn't blocked for long. */
 const BATCH_SIZE = 5_000;
-const FIRST_RUN_DELAY_MS = 60_000; // let startup (retained replay, sweeps) settle first
+const FIRST_RUN_DELAY_MS = 60_000; // let startup settle first
 
 /**
- * Deletes raw readings older than `days` (in batches). Alerts, fan events and
- * thresholds are kept. Returns the number of deleted rows.
+ * Deletes raw readings older than `days` (in batches). Alerts and thresholds
+ * are kept. Returns the number of deleted rows.
  */
 export async function pruneReadings(days: number, now = new Date()): Promise<number> {
-  // Reading.ts is stored as epoch milliseconds (adapter timestampFormat "unixepoch-ms").
-  const cutoffMs = now.getTime() - days * DAY_MS;
+  const cutoff = new Date(now.getTime() - days * DAY_MS);
   let total = 0;
   for (;;) {
+    // Uses the index on Reading.ts.
     const deleted = await prisma.$executeRaw`
       DELETE FROM "Reading"
-      WHERE "id" IN (SELECT "id" FROM "Reading" WHERE "ts" < ${cutoffMs} LIMIT ${BATCH_SIZE})`;
+      WHERE "id" IN (SELECT "id" FROM "Reading" WHERE "ts" < ${cutoff} LIMIT ${BATCH_SIZE})`;
     total += deleted;
     if (deleted < BATCH_SIZE) break;
     await new Promise((resolve) => setImmediate(resolve)); // let other work run

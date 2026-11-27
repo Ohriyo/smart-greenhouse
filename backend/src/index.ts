@@ -2,15 +2,19 @@ import { createServer } from 'node:http';
 import { networkInterfaces } from 'node:os';
 import { Expo } from 'expo-server-sdk';
 import { env } from './config/env.js';
-import { prisma } from './db.js';
-import { createApp } from './http/app.js';
+import { closeDatabase } from './db.js';
+import { createDevTools } from './dev/devTools.js';
+import { createApp, type MqttState } from './http/app.js';
+import { isAllowedOrigin } from './http/cors.js';
+import { createCommandRouter, createPendingCommands } from './ingest/commands.js';
+import { createIngest } from './ingest/ingest.js';
 import { createLogger } from './lib/logger.js';
-import { connectMqtt } from './mqtt/client.js';
-import { createCommandSender } from './mqtt/commands.js';
-import { createIngest } from './mqtt/ingest.js';
-import { createRealtime, type Realtime } from './realtime/socket.js';
-import { createRulesEngine } from './rules/engine.js';
+import { createMqttBridge } from './mqtt/bridge.js';
+import { brokerLabel, connectMqtt } from './mqtt/client.js';
+import { createCommandPublisher } from './mqtt/commands.js';
 import { createPushSender } from './push/sender.js';
+import { createRealtime } from './realtime/socket.js';
+import { createRulesEngine } from './rules/engine.js';
 import {
   deletePushTokens,
   getNotificationSettings,
@@ -18,13 +22,13 @@ import {
 } from './services/notifications.js';
 import { startPresenceSweeper } from './services/presence.js';
 import { startRetentionJob } from './services/retention.js';
-import { createDevTools } from './dev/devTools.js';
 import { createSmsNotifier } from './sms/notifier.js';
 import { createSmsProvider } from './sms/provider.js';
-import { createPrismaSmsStore } from './sms/store.js';
+import { createPrismaSmsStore } from './sms/prismaStore.js';
 import { startSmsSweeper } from './sms/sweeper.js';
 
 const log = createLogger('main');
+const startedAt = new Date();
 
 function lanAddresses(): string[] {
   return Object.values(networkInterfaces())
@@ -33,9 +37,20 @@ function lanAddresses(): string[] {
     .map((a) => a?.address ?? '');
 }
 
-const mqtt = connectMqtt(env.MQTT_URL);
-const commands = createCommandSender(mqtt);
-// Expo Push Service → FCM → phone. Needs internet on the laptop.
+const realtime = createRealtime();
+
+// MQTT (EMQX): the ESP32's main transport. Without MQTT_URL only HTTPS readings arrive.
+const mqtt = env.MQTT_URL
+  ? connectMqtt({ url: env.MQTT_URL, username: env.MQTT_USERNAME, password: env.MQTT_PASSWORD })
+  : null;
+if (!mqtt) log.warn('MQTT off: MQTT_URL is empty (readings only over HTTPS POST /api/readings)');
+const mqttState = (): MqttState => (!mqtt ? 'off' : mqtt.connected ? 'connected' : 'disconnected');
+const commands = createCommandRouter(
+  createPendingCommands(),
+  mqtt ? createCommandPublisher(mqtt) : null,
+);
+
+// Expo Push Service → FCM → phone.
 const push = createPushSender({
   client: new Expo(env.EXPO_ACCESS_TOKEN ? { accessToken: env.EXPO_ACCESS_TOKEN } : {}),
   store: {
@@ -45,78 +60,90 @@ const push = createPushSender({
   },
   enabled: env.PUSH_ENABLED,
 });
-let realtimeRef: Realtime | null = null;
-// SMS to the owner (critical readings, greenhouse offline). Test mode logs instead of sending.
-const smsProvider = createSmsProvider(env);
+
+// SMS alerts to ALERT_PHONE_NUMBERS (textbee or Semaphore). Dry run records and logs only.
 const sms = createSmsNotifier({
   store: createPrismaSmsStore(),
-  provider: smsProvider,
+  provider: createSmsProvider(env),
+  providerName: env.SMS_PROVIDER,
+  dryRun: env.SMS_DRY_RUN,
+  recipients: env.ALERT_PHONE_NUMBERS,
+  cooldownMs: env.ALERT_COOLDOWN_MINUTES * 60_000,
   dailyCap: env.SMS_DAILY_CAP,
+  offlineAfterMs: env.SMS_OFFLINE_AFTER_MINUTES * 60_000,
 });
-log.info(
-  smsProvider.simulated
-    ? 'SMS provider: console (test mode, messages are only logged)'
-    : `SMS provider: ${smsProvider.name}`,
-);
+if (env.ALERT_PHONE_NUMBERS.length === 0) {
+  log.warn('SMS alerts off: ALERT_PHONE_NUMBERS is empty');
+} else {
+  log.info(
+    `SMS alerts to ${env.ALERT_PHONE_NUMBERS.length} number(s) via ${env.SMS_PROVIDER}` +
+      (env.SMS_DRY_RUN ? ' — DRY RUN: recorded and logged, nothing is sent' : ' — LIVE'),
+  );
+  if (!env.SMS_DRY_RUN && env.SMS_PROVIDER === 'textbee' && !env.TEXTBEE_DEVICE_ID) {
+    log.warn('TEXTBEE_DEVICE_ID is empty: textbee picks the phone (set it to be sure)');
+  }
+}
 
 // Dev-only Demo tools (DEV_TOOLS=true): scenarios for the simulator.
-const devTools = createDevTools({
-  enabled: env.DEV_TOOLS,
-  publish: async (topic, payload) => {
-    await mqtt.publishAsync(topic, payload, { qos: 1 });
-  },
-});
+const devTools = createDevTools({ enabled: env.DEV_TOOLS, commands });
 if (env.DEV_TOOLS) log.warn('DEV_TOOLS=true: demo scenario endpoints are enabled (/api/dev)');
 
-const server = createServer(
-  createApp({ commands, push, sms, devTools, getRealtime: () => realtimeRef }),
-);
-const realtime = createRealtime(server);
-realtimeRef = realtime;
 const rules = createRulesEngine({
   realtime,
-  cooldownMs: env.ALERT_COOLDOWN_MIN * 60_000,
+  cooldownMs: env.ALERT_COOLDOWN_MINUTES * 60_000,
   onAlert: (alert) => {
-    void push.notifyAlert(alert);
-    void sms.onAlert(alert); // never throws; critical readings only
+    void push.notifyAlert(alert); // never throws
+  },
+  onSmsCandidate: (candidate) => {
+    void sms.onCandidate(candidate); // never throws; runs after the reading was stored
   },
 });
-// Offline timeouts (and trusting retained "offline") only count time during
-// which we were actually connected to the broker.
-let listeningSince: Date | null = null;
-mqtt.on('connect', () => {
-  listeningSince = new Date();
-});
-mqtt.on('close', () => {
-  listeningSince = null;
-});
 
-const ingest = createIngest({
-  realtime,
-  commands,
-  rules,
-  sms,
-  devTools,
-  listeningSince: () => listeningSince,
-});
+const ingest = createIngest({ realtime, rules, devTools, commands });
 
-mqtt.on('message', (topic, payload, packet) => {
-  ingest.handleMessage(topic, payload, packet.retain);
-});
+const bridge = mqtt ? createMqttBridge({ ingest, commands, realtime, rules }) : null;
+if (mqtt && bridge) {
+  log.info(`MQTT broker: ${brokerLabel(env.MQTT_URL ?? '')}`);
+  mqtt.on('message', (topic, payload, packet) => {
+    bridge.handleMessage(topic, payload, packet.retain);
+  });
+}
+
+const server = createServer(
+  createApp({
+    ingest,
+    commands,
+    mqttState,
+    push,
+    sms,
+    devTools,
+    realtime,
+    config: {
+      deviceApiKey: env.DEVICE_API_KEY,
+      adminApiKey: env.ADMIN_API_KEY,
+      corsOrigins: env.CORS_ORIGIN,
+      defaultDeviceId: env.DEFAULT_DEVICE_ID,
+    },
+  }),
+);
+realtime.attach(server, (origin) => isAllowedOrigin(origin, env.CORS_ORIGIN));
 
 const stopRetention = startRetentionJob(env.READINGS_RETENTION_DAYS);
 const stopSmsSweeper = startSmsSweeper(sms);
-
+// Devices get a full reporting window after every start (e.g. a Render cold start).
 const stopSweeper = startPresenceSweeper({
   realtime,
   rules,
   fallbackSec: env.OFFLINE_AFTER_SEC,
-  listeningSince: () => listeningSince,
+  listeningSince: () => startedAt,
 });
 
 server.listen(env.PORT, '0.0.0.0', () => {
-  log.info(`HTTP + Socket.IO listening on port ${env.PORT}`);
-  for (const ip of lanAddresses()) log.info(`  LAN: http://${ip}:${env.PORT}`);
+  log.info(`HTTP + Socket.IO listening on port ${env.PORT} (${env.NODE_ENV})`);
+  if (env.CORS_ORIGIN.length) log.info(`CORS origins: ${env.CORS_ORIGIN.join(', ')} + localhost`);
+  if (env.NODE_ENV !== 'production') {
+    for (const ip of lanAddresses()) log.info(`  LAN: http://${ip}:${env.PORT}`);
+  }
 });
 
 let shuttingDown = false;
@@ -128,9 +155,12 @@ async function shutdown(signal: string): Promise<void> {
   stopRetention();
   stopSmsSweeper();
   push.stop();
+  bridge?.close();
+  await mqtt?.endAsync().catch(() => undefined); // stop new MQTT readings first
   await realtime.close(); // also closes the HTTP server
-  await mqtt.endAsync();
-  await prisma.$disconnect();
+  await ingest.idle(); // finish alert rules for readings already accepted
+  await sms.idle(); // ...and their SMS
+  await closeDatabase();
   process.exit(0);
 }
 

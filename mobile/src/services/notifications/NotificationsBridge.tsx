@@ -5,7 +5,13 @@ import { AppState } from 'react-native';
 import { useNotificationStore } from '@/store/notificationStore';
 import { useSettingsStore } from '@/store/settingsStore';
 
-import { ensureAlertChannel, pushSupport, refreshPermission, registerForPush } from './push';
+import {
+  ensureAlertChannel,
+  PUSH_PLATFORM,
+  pushSupport,
+  refreshPermission,
+  registerForPush,
+} from './push';
 
 /**
  * Keeps this phone's push registration in sync. Renders nothing.
@@ -15,8 +21,13 @@ import { ensureAlertChannel, pushSupport, refreshPermission, registerForPush } f
  * - registers the Expo push token with the backend whenever the server address
  *   or the permission changes, and again when FCM rotates the token
  * Asking for permission is never done here: the UI explains first (Alerts/Settings).
+ * Android only: the web build has no closed-app push.
  */
 export function NotificationsBridge() {
+  return PUSH_PLATFORM ? <AndroidNotificationsBridge /> : null;
+}
+
+function AndroidNotificationsBridge() {
   const apiUrl = useSettingsStore((s) => s.apiUrl);
   const settingsHydrated = useSettingsStore((s) => s.hydrated);
   const storeHydrated = useNotificationStore((s) => s.hydrated);

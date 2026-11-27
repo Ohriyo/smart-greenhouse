@@ -1,11 +1,13 @@
 import { DeviceIdSchema } from '../domain/schemas.js';
 
+/** MQTT topics (docs/api-contract.md §4). */
 export const topics = {
+  /** Device → backend: one reading (same JSON as POST /api/readings). */
   telemetry: (deviceId: string) => `greenhouse/${deviceId}/telemetry`,
+  /** Device → backend: "online" / "offline" (retained; "offline" is the Last Will). */
   status: (deviceId: string) => `greenhouse/${deviceId}/status`,
+  /** Backend → device: one command (calibrateSoil, or simulate for the simulator). */
   command: (deviceId: string) => `greenhouse/${deviceId}/command`,
-  /** Dev-only: Demo scenarios for the simulator (never used by the real firmware). */
-  sim: (deviceId: string) => `greenhouse/${deviceId}/sim`,
 };
 
 export const SUBSCRIPTIONS = ['greenhouse/+/telemetry', 'greenhouse/+/status'];

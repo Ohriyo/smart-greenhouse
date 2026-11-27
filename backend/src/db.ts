@@ -1,21 +1,22 @@
-import path from 'node:path';
-import { PrismaBetterSqlite3 } from '@prisma/adapter-better-sqlite3';
-import { BACKEND_ROOT, env } from './config/env.js';
+import { PrismaPg } from '@prisma/adapter-pg';
+import { env } from './config/env.js';
 import { PrismaClient } from './generated/prisma/client.js';
+import { createLogger } from './lib/logger.js';
+import { poolConfig } from './lib/pgPool.js';
 
-/** Resolve a relative `file:` URL against backend/ so the DB is the same whatever the cwd. */
-function resolveSqliteUrl(url: string): string {
-  if (!url.startsWith('file:')) return url;
-  const file = url.slice('file:'.length);
-  if (file === ':memory:' || path.isAbsolute(file)) return url;
-  return `file:${path.resolve(BACKEND_ROOT, file)}`;
+const log = createLogger('db');
+
+export const prisma = new PrismaClient({
+  adapter: new PrismaPg(poolConfig(env.DATABASE_URL), {
+    // An idle connection dropped by the server (e.g. Neon suspending its compute).
+    // The pool opens a new one for the next query.
+    onPoolError: (err) => {
+      log.warn('an idle database connection was closed', err);
+    },
+  }),
+});
+
+/** Closes Prisma and its connection pool (shutdown, end of a test run). */
+export async function closeDatabase(): Promise<void> {
+  await prisma.$disconnect();
 }
-
-// DateTime columns are stored as integer epoch milliseconds, which lets the
-// history endpoint bucket readings in SQL (see services/history.ts).
-const adapter = new PrismaBetterSqlite3(
-  { url: resolveSqliteUrl(env.DATABASE_URL) },
-  { timestampFormat: 'unixepoch-ms' },
-);
-
-export const prisma = new PrismaClient({ adapter });

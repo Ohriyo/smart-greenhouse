@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { useEffect } from 'react';
 
+import { LATEST_POLL_MS } from '@/constants/config';
 import { api } from '@/services/api';
 import { useLiveStore } from '@/store/liveStore';
 import { useRecentStore } from '@/store/recentStore';
@@ -14,14 +15,17 @@ export const queryKeys = {
   recent: (url: string | null, id: string) => ['recent', url, id] as const,
 };
 
-/** Saved server URL, and whether queries may run (settings loaded + URL set). */
+/** The server URL (from the build), and whether queries may run (settings loaded + URL set). */
 export function useServer() {
   const apiUrl = useSettingsStore((s) => s.apiUrl);
   const hydrated = useSettingsStore((s) => s.hydrated);
   return { apiUrl, ready: hydrated && apiUrl !== null };
 }
 
-/** Device list; also seeds the live store (socket events keep it fresh afterwards). */
+/**
+ * Device list; also seeds the live store (socket events keep it fresh afterwards).
+ * Polled while empty, so a new greenhouse shows up after its first reading.
+ */
 export function useDevicesQuery() {
   const { apiUrl, ready } = useServer();
   return useQuery({
@@ -32,23 +36,35 @@ export function useDevicesQuery() {
       useLiveStore.getState().setDevices(devices);
       return devices;
     },
+    refetchInterval: (query) => (query.state.data?.length === 0 ? LATEST_POLL_MS : false),
   });
 }
 
-/** Device + newest reading, written into the live store. */
+/**
+ * Device + newest reading, written into the live store. Polled every 10 s while
+ * the app is in the foreground: the data stays current even without the socket,
+ * and every poll result is recorded (liveness, connection banner).
+ */
 export function useLatestQuery(deviceId: string | undefined) {
   const { apiUrl, ready } = useServer();
   return useQuery({
     queryKey: queryKeys.latest(apiUrl, deviceId ?? ''),
     enabled: ready && !!deviceId,
     queryFn: async ({ signal }) => {
-      const latest = await api.latest(deviceId ?? '', signal);
-      const live = useLiveStore.getState();
-      live.upsertDevice(latest.device);
-      if (latest.reading) live.setReading(latest.reading);
-      if (latest.lastFanChange) live.applyFanState(latest.lastFanChange);
-      return latest;
+      try {
+        const latest = await api.latest(deviceId ?? '', signal);
+        const live = useLiveStore.getState();
+        live.upsertDevice(latest.device);
+        if (latest.reading) live.setReading(latest.reading);
+        live.setPoll('ok');
+        return latest;
+      } catch (err) {
+        // A cancelled request (screen left, refetch replaced it) says nothing about the server.
+        if (!signal.aborted) useLiveStore.getState().setPoll('error');
+        throw err;
+      }
     },
+    refetchInterval: LATEST_POLL_MS,
   });
 }
 

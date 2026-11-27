@@ -17,20 +17,15 @@ import {
   type PushToken,
   type ReadAllResponse,
   DeviceListSchema,
-  FanCommandResponseSchema,
-  FanCommandSchema,
   HealthSchema,
   HistorySchema,
   SimulateResponseSchema,
-  SmsSettingsSchema,
-  SmsSettingsUpdateSchema,
-  SmsTestResultSchema,
+  SmsStatusInfoSchema,
   SoilCalibrationBodySchema,
   SoilCalibrationResponseSchema,
   DevStatusSchema,
   DeviceRenameSchema,
   DeviceSchema,
-  FanActivitySchema,
   HeatmapSchema,
   LatestSchema,
   RecentSchema,
@@ -38,16 +33,12 @@ import {
   ThresholdsUpdateResponseSchema,
   ThresholdsUpdateSchema,
   type Device,
-  type FanCommand,
-  type FanCommandResponse,
   type ThresholdsUpdate,
   type ThresholdsUpdateResponse,
   type DevStatus,
   type SimScenario,
   type SimulateResponse,
-  type SmsSettings,
-  type SmsSettingsUpdate,
-  type SmsTestResult,
+  type SmsStatusInfo,
   type SoilCalibrationResponse,
   type SoilPoint,
   type Health,
@@ -55,7 +46,6 @@ import {
   type HistoryMetric,
   type HistoryRange,
   type AlertMetric,
-  type FanActivity,
   type Heatmap,
   type Latest,
   type Recent,
@@ -66,8 +56,9 @@ import { apiRequest } from './client';
 
 /** Typed endpoint functions (docs/api-contract.md §2). */
 export const api = {
-  health: (opts?: { baseUrl?: string; signal?: AbortSignal }): Promise<Health> =>
-    apiRequest('/api/health', HealthSchema, { ...opts, timeoutMs: 5000 }),
+  /** Connection check (Settings → Test connection). 503 = the server's database is down. */
+  health: (signal?: AbortSignal): Promise<Health> =>
+    apiRequest('/api/health', HealthSchema, { signal }),
 
   devices: (signal?: AbortSignal): Promise<Device[]> =>
     apiRequest('/api/devices', DeviceListSchema, { signal }),
@@ -88,17 +79,6 @@ export const api = {
       `/api/devices/${encodeURIComponent(deviceId)}/recent?minutes=${minutes}`,
       RecentSchema,
       { signal },
-    ),
-
-  fanActivity: (
-    deviceId: string,
-    range: HistoryRange,
-    signal?: AbortSignal,
-  ): Promise<FanActivity> =>
-    apiRequest(
-      `/api/devices/${encodeURIComponent(deviceId)}/fan-activity?range=${range}`,
-      FanActivitySchema,
-      { signal, timeoutMs: 15_000 },
     ),
 
   heatmap: (
@@ -130,16 +110,10 @@ export const api = {
       signal,
     }),
 
-  /** 202 = sent to the device, not yet confirmed (confirmation arrives in telemetry). */
-  setFanMode: (deviceId: string, body: FanCommand): Promise<FanCommandResponse> =>
-    apiRequest(`/api/devices/${encodeURIComponent(deviceId)}/fan`, FanCommandResponseSchema, {
-      method: 'POST',
-      body: FanCommandSchema.parse(body),
-    }),
-
   /**
    * The greenhouse stores its *current* soil reading as the dry (sensor in air) or
-   * wet (sensor in water) point. 202 = sent; the new soilDryMv/soilWetMv in telemetry confirm it.
+   * wet (sensor in water) point. 202: sent at once over MQTT, or with the device's next
+   * HTTPS reading (≤ 30 s); the new soilDryMv/soilWetMv it then reports confirm it.
    */
   calibrateSoil: (deviceId: string, point: SoilPoint): Promise<SoilCalibrationResponse> =>
     apiRequest(
@@ -182,23 +156,11 @@ export const api = {
       body: { deviceId, scenario },
     }),
 
-  // ---------- SMS alerts to the owner ----------
+  // ---------- SMS alerts (configured in the server environment; read-only here) ----------
 
-  smsSettings: (signal?: AbortSignal): Promise<SmsSettings> =>
-    apiRequest('/api/sms/settings', SmsSettingsSchema, { signal }),
-
-  updateSmsSettings: (body: SmsSettingsUpdate): Promise<SmsSettings> =>
-    apiRequest('/api/sms/settings', SmsSettingsSchema, {
-      method: 'PUT',
-      body: SmsSettingsUpdateSchema.parse(body),
-    }),
-
-  /** One test message to the saved number (409 without a number, 429 after 5 in an hour). */
-  sendTestSms: (): Promise<SmsTestResult> =>
-    apiRequest('/api/sms/test', SmsTestResultSchema, {
-      method: 'POST',
-      timeoutMs: 15_000, // the backend waits for the SMS provider
-    }),
+  /** Numbers (masked), dry-run mode, limits and the newest attempts. */
+  smsStatus: (signal?: AbortSignal): Promise<SmsStatusInfo> =>
+    apiRequest('/api/sms/status', SmsStatusInfoSchema, { signal }),
 
   // ---------- Push notifications ----------
 

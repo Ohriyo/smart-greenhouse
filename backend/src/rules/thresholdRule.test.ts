@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { EMPTY_STATE, evaluateMetric, type MetricState } from './thresholdRule.js';
+import { EMPTY_STATE, evaluateMetric, transitions, type MetricState } from './thresholdRule.js';
 
 const MIN = 60_000;
 const COOLDOWN = 15 * MIN;
@@ -59,5 +59,56 @@ describe('threshold rule (airTemp, max 35, deadband 0.5, critical +3)', () => {
     assert.deepEqual(run([14, 11.5], 15, 35).alerts, ['below_min:warning', 'below_min:critical']);
     const { state } = run([40], 15, 35);
     assert.deepEqual(run([40], 15, null, state).alerts, ['recovered:info']);
+  });
+});
+
+/** Feeds values (one per minute) and returns the transitions as "kind:direction". */
+function changes(values: number[], min: number | null, max: number | null) {
+  let state: MetricState = EMPTY_STATE;
+  const out: string[] = [];
+  values.forEach((v, i) => {
+    const r = evaluateMetric('airTemp', v, min, max, state, i * MIN, COOLDOWN);
+    for (const t of transitions(state, r.next)) out.push(`${t.kind}:${t.direction}`);
+    state = r.next;
+  });
+  return out;
+}
+
+describe('transitions (what the SMS alerts react to)', () => {
+  it('nothing while the value stays inside the limits', () => {
+    assert.deepEqual(changes([20, 25, 34.9, 15, 30], 15, 35), []);
+  });
+
+  it('a crossing, then a recovery past the deadband', () => {
+    assert.deepEqual(changes([30, 36, 36.5, 34.8, 34.4], 15, 35), [
+      'crossed:above_max',
+      'recovered:above_max',
+    ]);
+  });
+
+  it('severity changes inside an episode are not transitions', () => {
+    assert.deepEqual(changes([36, 39, 36, 40], 15, 35), ['crossed:above_max']);
+  });
+
+  it('a re-crossing within the in-app cooldown is still a crossing (the SMS layer decides)', () => {
+    assert.deepEqual(changes([36, 30, 36], 15, 35), [
+      'crossed:above_max',
+      'recovered:above_max',
+      'crossed:above_max',
+    ]);
+  });
+
+  it('a silent episode that gets announced after the cooldown', () => {
+    const values = [36, 30, ...Array<number>(16).fill(36)];
+    assert.deepEqual(changes(values, 15, 35), [
+      'crossed:above_max',
+      'recovered:above_max',
+      'crossed:above_max',
+      'announced:above_max',
+    ]);
+  });
+
+  it('a jump straight to the other limit is only a crossing (no "back to normal")', () => {
+    assert.deepEqual(changes([36, 10], 15, 35), ['crossed:above_max', 'crossed:below_min']);
   });
 });

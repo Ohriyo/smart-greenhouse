@@ -1,7 +1,7 @@
 import type { SmsNotifier } from './notifier.js';
 
 const SWEEP_INTERVAL_MS = 30_000;
-const FIRST_SWEEP_DELAY_MS = 20_000; // let startup (broker connect, retained replay) settle first
+const FIRST_SWEEP_DELAY_MS = 20_000; // let startup settle first
 
 /**
  * Runs the SMS sweep (greenhouse offline for N minutes, back online, stale

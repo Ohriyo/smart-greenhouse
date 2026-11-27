@@ -5,7 +5,13 @@ import ReanimatedSwipeable, {
 } from 'react-native-gesture-handler/ReanimatedSwipeable';
 
 import { Card, Icon, IconTile, Text } from '@/components/ui';
-import { alertAccent, alertDetail, alertTitle, alertVisual } from '@/features/alerts/presentation';
+import {
+  alertAccent,
+  alertDetail,
+  alertTitle,
+  alertVisual,
+  smsStatusLabel,
+} from '@/features/alerts/presentation';
 import { MANILA_TZ } from '@/utils/manilaTime';
 import { toneColors, useTheme } from '@/theme';
 import type { Alert } from '@/types/api';
@@ -42,6 +48,7 @@ export const AlertCard = memo(function AlertCard({
   const accent = alertAccent(alert);
   const title = alertTitle(alert);
   const detail = alertDetail(alert);
+  const sms = alert.sms ? smsStatusLabel(alert.sms.status) : null;
 
   const markRead = useCallback(() => {
     onMarkRead(alert);
@@ -52,7 +59,7 @@ export const AlertCard = memo(function AlertCard({
     <Card
       onPress={() => onOpen(alert)}
       accentColor={accent ? toneColors(theme, accent).fg : undefined}
-      accessibilityLabel={`${unread ? 'Unread. ' : ''}${title}. ${detail}. ${formatRelativeSpoken(alert.ts, now)}`}
+      accessibilityLabel={`${unread ? 'Unread. ' : ''}${title}. ${detail}. ${formatRelativeSpoken(alert.ts, now)}${sms ? `. ${sms.text}` : ''}`}
       accessibilityHint="Opens the alert details"
       accessibilityActions={unread ? MARK_READ_ACTION : undefined}
       onAccessibilityAction={(e) => {
@@ -79,6 +86,18 @@ export const AlertCard = memo(function AlertCard({
           <Text variant="micro" color="secondary" style={styles.meta}>
             {formatRelative(alert.ts, now)} · {MANILA_TZ}
           </Text>
+          {sms ? (
+            <View style={styles.sms}>
+              <Icon
+                name="chatbubble-ellipses-outline"
+                size={12}
+                color={toneColors(theme, sms.tone).fg}
+              />
+              <Text variant="micro" tint={toneColors(theme, sms.tone).fg}>
+                {sms.text}
+              </Text>
+            </View>
+          ) : null}
           {unread ? (
             <Text variant="micro" color="tertiary">
               Swipe to mark read
@@ -121,6 +140,7 @@ const styles = StyleSheet.create({
   title: { flexShrink: 1 },
   dot: { width: 8, height: 8, borderRadius: 4 },
   meta: { marginTop: 4 },
+  sms: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   action: {
     width: 96,
     marginRight: 8,

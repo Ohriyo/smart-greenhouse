@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { StyleSheet, View } from 'react-native';
+import { Platform, StyleSheet, View } from 'react-native';
 
 import { Button, Icon, Text, type IconName } from '@/components/ui';
 import { toneColors, useTheme, type StatusTone } from '@/theme';
@@ -10,10 +10,9 @@ export type ConnectionState =
   | 'connected'
   | 'connecting' // first connection / back from the background
   | 'reconnecting' // live connection dropped, retrying with backoff
-  | 'phone-offline' // no Wi-Fi and no mobile data
-  | 'away' // mobile data or another Wi-Fi: the backend is only on the home LAN
-  | 'backend-unreachable' // on the home Wi-Fi, but the laptop doesn't answer
-  | 'device-offline'; // backend is fine, the ESP32 is not
+  | 'phone-offline' // no internet at all
+  | 'backend-unreachable' // the server doesn't answer (asleep, starting up, or down)
+  | 'device-offline'; // the server is fine, the ESP32 is not
 
 interface ConnectionBannerProps {
   state: ConnectionState;
@@ -34,13 +33,12 @@ const CONFIG: Record<
   'phone-offline': {
     tone: 'danger',
     icon: 'cloud-offline-outline',
-    title: 'Your phone is offline',
+    title: 'You’re offline',
   },
-  away: { tone: 'neutral', icon: 'home-outline', title: 'Not on the greenhouse Wi-Fi' },
   'backend-unreachable': {
     tone: 'danger',
-    icon: 'laptop-outline',
-    title: "Can't reach the backend",
+    icon: 'server-outline',
+    title: "Can't reach the server",
   },
   'device-offline': { tone: 'offline', icon: 'radio-outline', title: 'Greenhouse is offline' },
 };
@@ -79,15 +77,15 @@ function detailFor(
 ): string {
   switch (state) {
     case 'phone-offline':
-      return `No Wi-Fi or mobile data. ${saved} Alerts arrive as push notifications once the phone is online again.`;
-    case 'away':
-      return `Live data and controls only work on your home Wi-Fi (the backend runs on your laptop). ${saved} Alerts still arrive as push notifications.`;
+      return Platform.OS === 'android'
+        ? `No internet connection. ${saved} Alerts arrive as push notifications once the phone is online again.`
+        : `No internet connection. ${saved}`;
     case 'backend-unreachable':
-      return `Is the backend running and the laptop awake? ${saved} Push alerts also need the backend running.`;
+      return `The free server sleeps when idle and takes up to a minute to start, or it may be down. ${saved}`;
     case 'device-offline':
-      return `No data since then (last data ${lastSeen}). The fan keeps running on its own.`;
+      return `No data since then (last data ${lastSeen}).`;
     case 'connecting':
-      return 'Opening the live connection to your laptop.';
+      return 'Loading the latest readings.';
     case 'reconnecting':
       return 'The live connection dropped. Values may be a few seconds old.';
   }

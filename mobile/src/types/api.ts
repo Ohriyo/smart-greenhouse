@@ -12,9 +12,6 @@ const nullableNumber = z.number().nullable();
 
 // ---------- Enums ----------
 
-export const FanModeSchema = z.enum(['auto', 'on', 'off']);
-export type FanMode = z.infer<typeof FanModeSchema>;
-
 export const HistoryMetricSchema = z.enum([
   'airTemp',
   'humidity',
@@ -46,16 +43,14 @@ export const DeviceSchema = z.object({
   lastSeen: isoDate.nullable(),
   createdAt: isoDate,
   telemetryIntervalSec: z.number().int().nullable(),
-  // Fan thresholds the device reports using (acknowledgement). nullish = older backend.
-  reportedFanOnTemp: z.number().nullish(),
-  reportedFanOffTemp: z.number().nullish(),
-  reportedFanThresholdsAt: isoDate.nullish(),
   // Diagnostics reported in telemetry (contract §1 Device). nullish = older backend.
   rssi: z.number().int().nullish(),
   uptimeSec: z.number().int().nullish(),
   uptimeAt: isoDate.nullish(),
   soilDryMv: z.number().int().nullish(),
   soilWetMv: z.number().int().nullish(),
+  /** How the latest reading arrived: MQTT (through EMQX) or the HTTPS fallback. */
+  transport: z.enum(['mqtt', 'https']).nullish(),
 });
 export type Device = z.infer<typeof DeviceSchema>;
 
@@ -69,16 +64,12 @@ export const ReadingSchema = z.object({
   soilMoisture: nullableNumber,
   soilRaw: z.number().int().nullable(),
   lux: nullableNumber,
-  fanOn: z.boolean(),
-  fanMode: FanModeSchema,
   rssi: z.number().int().nullable(),
 });
 export type Reading = z.infer<typeof ReadingSchema>;
 
 export const ThresholdsSchema = z.object({
   deviceId: z.string(),
-  fanOnTemp: z.number(),
-  fanOffTemp: z.number(),
   airTempMin: nullableNumber,
   airTempMax: nullableNumber,
   humidityMin: nullableNumber,
@@ -91,14 +82,23 @@ export const ThresholdsSchema = z.object({
 });
 export type Thresholds = z.infer<typeof ThresholdsSchema>;
 
-export const FanStateSchema = z.object({
-  deviceId: z.string(),
-  ts: isoDate,
-  fanOn: z.boolean(),
-  fanMode: FanModeSchema,
-  airTemp: nullableNumber,
+/** Outcome of one SMS attempt (contract §7). */
+export const SmsStatusSchema = z.enum([
+  'sent',
+  'failed',
+  'skipped_cooldown',
+  'skipped_daily_cap',
+  'dry_run',
+]);
+export type SmsStatus = z.infer<typeof SmsStatusSchema>;
+
+/** The newest SMS attempt for an alert. `detail` says why it wasn't sent (null when sent). */
+export const AlertSmsSchema = z.object({
+  status: SmsStatusSchema,
+  at: isoDate,
+  detail: z.string().nullable(),
 });
-export type FanState = z.infer<typeof FanStateSchema>;
+export type AlertSms = z.infer<typeof AlertSmsSchema>;
 
 export const AlertSchema = z.object({
   id: z.number().int(),
@@ -112,6 +112,8 @@ export const AlertSchema = z.object({
   limit: z.number().nullish(),
   message: z.string(),
   readAt: isoDate.nullable(),
+  // null = no SMS for this alert (yet); always null in the socket `alert` event.
+  sms: AlertSmsSchema.nullish(),
 });
 export type Alert = z.infer<typeof AlertSchema>;
 
@@ -119,9 +121,13 @@ export const ErrorCodeSchema = z.enum([
   'VALIDATION_ERROR',
   'INVALID_JSON',
   'BAD_REQUEST',
+  'UNAUTHORIZED',
   'NOT_FOUND',
   'DEVICE_OFFLINE',
-  'BROKER_UNAVAILABLE',
+  'SMS_NOT_CONFIGURED',
+  'NOT_SIMULATED',
+  'RATE_LIMITED',
+  'NOT_CONFIGURED',
   'INTERNAL_ERROR',
 ]);
 export type ErrorCode = z.infer<typeof ErrorCodeSchema>;
@@ -138,11 +144,14 @@ export type ApiErrorBody = z.infer<typeof ApiErrorBodySchema>;
 
 // ---------- REST responses (contract §2) ----------
 
+/** GET /api/health (200 when the database works, 503 when it doesn't). */
 export const HealthSchema = z.object({
   status: z.enum(['ok', 'degraded']),
   db: z.enum(['ok', 'error']),
-  mqtt: z.enum(['connected', 'disconnected']),
+  /** The backend's MQTT broker connection ("off" = MQTT not configured). nullish = older backend. */
+  mqtt: z.enum(['connected', 'disconnected', 'off']).nullish(),
   uptimeSec: z.number(),
+  devTools: z.boolean(),
   time: isoDate,
 });
 export type Health = z.infer<typeof HealthSchema>;
@@ -152,8 +161,6 @@ export const DeviceListSchema = z.array(DeviceSchema);
 export const LatestSchema = z.object({
   device: DeviceSchema,
   reading: ReadingSchema.nullable(),
-  /** Most recent confirmed fan change ("running since …"). */
-  lastFanChange: FanStateSchema.nullish(),
 });
 export type Latest = z.infer<typeof LatestSchema>;
 
@@ -166,18 +173,6 @@ export const RecentSchema = z.object({
   readings: z.array(ReadingSchema),
 });
 export type Recent = z.infer<typeof RecentSchema>;
-
-/** GET /api/devices/:id/fan-activity: seconds on per Manila-aligned bucket. */
-export const FanActivitySchema = z.object({
-  deviceId: z.string(),
-  range: HistoryRangeSchema,
-  from: isoDate,
-  to: isoDate,
-  bucketSec: z.number().int().positive(),
-  totalOnSec: z.number().int().nonnegative(),
-  buckets: z.array(z.object({ ts: isoDate, onSec: z.number().int().nonnegative() })),
-});
-export type FanActivity = z.infer<typeof FanActivitySchema>;
 
 /** GET /api/devices/:id/heatmap: hourly averages per Manila day, oldest first. */
 export const HeatmapSchema = z.object({
@@ -218,17 +213,8 @@ export type History = z.infer<typeof HistorySchema>;
 
 export const ThresholdsUpdateResponseSchema = z.object({
   thresholds: ThresholdsSchema,
-  deviceSync: z.enum(['sent', 'pending']),
 });
 export type ThresholdsUpdateResponse = z.infer<typeof ThresholdsUpdateResponseSchema>;
-
-export const FanCommandResponseSchema = z.object({
-  commandId: z.string(),
-  deviceId: z.string(),
-  mode: FanModeSchema,
-  status: z.literal('sent'),
-});
-export type FanCommandResponse = z.infer<typeof FanCommandResponseSchema>;
 
 // ---------- Dev-only Demo tools (contract §2 "Dev-only endpoints") ----------
 
@@ -243,67 +229,47 @@ export const DevStatusSchema = z.object({
 });
 export type DevStatus = z.infer<typeof DevStatusSchema>;
 
+/** 202: queued as a `simulate` command, applied with the simulator's next reading. */
 export const SimulateResponseSchema = z.object({
   deviceId: z.string(),
   scenario: SimScenarioSchema,
-  status: z.literal('sent'),
+  status: z.literal('queued'),
 });
 export type SimulateResponse = z.infer<typeof SimulateResponseSchema>;
 
-// ---------- SMS alerts (contract §7) ----------
+// ---------- SMS alerts (contract §7, configured in the server environment) ----------
 
-/** International format: "+", then 8–15 digits, the first not 0 (mirrors the backend). */
-export const E164_PATTERN = /^\+[1-9]\d{7,14}$/;
+/** One SMS attempt (newest first in GET /api/sms/status). Numbers are masked. */
+export const SmsAttemptSchema = z.object({
+  id: z.number().int(),
+  at: isoDate,
+  kind: z.enum(['threshold', 'recovery', 'offline', 'online', 'test']),
+  deviceId: z.string().nullable(),
+  alertId: z.number().int().nullable(),
+  sensor: z.string().nullable(),
+  condition: z.string(),
+  value: nullableNumber,
+  threshold: nullableNumber,
+  message: z.string(),
+  recipients: z.array(z.string()),
+  status: SmsStatusSchema,
+  providerResponse: z.string().nullable(),
+});
+export type SmsAttempt = z.infer<typeof SmsAttemptSchema>;
 
-export const SmsSettingsSchema = z.object({
-  enabled: z.boolean(),
-  phone: z.string().nullable(),
-  offlineAfterMin: z.number().int(),
-  /** "console" = test mode (messages only logged on the backend), "semaphore" = real SMS. */
+/** GET /api/sms/status: read-only setup and the 10 newest attempts. */
+export const SmsStatusInfoSchema = z.object({
   provider: z.string(),
-  simulated: z.boolean(),
+  /** true = SMS_DRY_RUN: attempts are logged on the server, nothing is sent. */
+  dryRun: z.boolean(),
+  recipients: z.array(z.string()),
+  cooldownMinutes: z.number().int(),
   dailyCap: z.number().int(),
+  offlineAfterMinutes: z.number().int(),
   sentLast24h: z.number().int(),
-  last: z
-    .object({
-      ts: isoDate,
-      kind: z.enum(['critical', 'offline', 'closing', 'test']),
-      status: z.enum(['sent', 'failed', 'skipped']),
-      error: z.string().nullable(),
-    })
-    .nullable(),
-  updatedAt: isoDate,
+  recent: z.array(SmsAttemptSchema),
 });
-export type SmsSettings = z.infer<typeof SmsSettingsSchema>;
-
-/** PUT /api/sms/settings (full replacement). */
-export const SmsSettingsUpdateSchema = z
-  .object({
-    enabled: z.boolean(),
-    phone: z
-      .string()
-      .regex(E164_PATTERN, 'Enter the number like +63 917 123 4567 or 0917 123 4567')
-      .nullable(),
-    offlineAfterMin: z.number().int().min(5, 'At least 5 minutes').max(120, 'At most 120 minutes'),
-  })
-  .superRefine((v, ctx) => {
-    if (v.enabled && v.phone === null) {
-      ctx.addIssue({
-        code: 'custom',
-        path: ['phone'],
-        message: 'Enter the owner’s number to turn SMS alerts on',
-      });
-    }
-  });
-export type SmsSettingsUpdate = z.infer<typeof SmsSettingsUpdateSchema>;
-
-/** POST /api/sms/test. `simulated` = test mode: only written to the backend log. */
-export const SmsTestResultSchema = z.object({
-  status: z.enum(['sent', 'failed']),
-  error: z.string().nullable(),
-  simulated: z.boolean(),
-});
-export type SmsTestResult = z.infer<typeof SmsTestResultSchema>;
+export type SmsStatusInfo = z.infer<typeof SmsStatusInfoSchema>;
 
 /** PATCH /api/devices/:id: rename the greenhouse (mirrors the backend rules, contract §2). */
 export const DeviceRenameSchema = z.object({
@@ -311,7 +277,11 @@ export const DeviceRenameSchema = z.object({
 });
 export type DeviceRename = z.infer<typeof DeviceRenameSchema>;
 
-/** POST /api/devices/:id/soil-calibration (202: sent, acknowledged by telemetry). */
+/**
+ * POST /api/devices/:id/soil-calibration (202: published over MQTT at once, or queued
+ * for the device's next HTTPS reading; acknowledged by the new soilDryMv/soilWetMv
+ * it reports).
+ */
 export const SoilPointSchema = z.enum(['dry', 'wet']);
 export type SoilPoint = z.infer<typeof SoilPointSchema>;
 export const SoilCalibrationBodySchema = z.object({ point: SoilPointSchema });
@@ -319,7 +289,9 @@ export const SoilCalibrationResponseSchema = z.object({
   commandId: z.string(),
   deviceId: z.string(),
   point: SoilPointSchema,
-  status: z.literal('sent'),
+  status: z.literal('queued'),
+  /** "mqtt" = sent to the device now; "queued" = with its next HTTPS reading. */
+  delivery: z.enum(['mqtt', 'queued']).nullish(),
 });
 export type SoilCalibrationResponse = z.infer<typeof SoilCalibrationResponseSchema>;
 
@@ -371,10 +343,6 @@ export const PushDataSchema = z.object({
 
 // ---------- REST request bodies (validated before sending) ----------
 
-const fanTemp = z
-  .number({ error: 'Enter a number' })
-  .min(10, 'Must be 10–50 °C')
-  .max(50, 'Must be 10–50 °C');
 const limit = (min: number, max: number, unit: string) =>
   z
     .number({ error: 'Enter a number' })
@@ -392,8 +360,6 @@ const THRESHOLD_PAIRS = [
 /** PUT /api/devices/:id/thresholds: full replacement, null = no limit. */
 export const ThresholdsUpdateSchema = z
   .object({
-    fanOnTemp: fanTemp,
-    fanOffTemp: fanTemp,
     airTempMin: limit(-40, 80, '°C'),
     airTempMax: limit(-40, 80, '°C'),
     humidityMin: limit(0, 100, '%'),
@@ -405,13 +371,6 @@ export const ThresholdsUpdateSchema = z
   })
   .superRefine((t, ctx) => {
     // Same rules as the backend (contract §1 Thresholds).
-    if (t.fanOnTemp - t.fanOffTemp < 1) {
-      ctx.addIssue({
-        code: 'custom',
-        path: ['fanOffTemp'],
-        message: 'Must be at least 1 °C below the ON temperature',
-      });
-    }
     for (const [minKey, maxKey] of THRESHOLD_PAIRS) {
       const min = t[minKey];
       const max = t[maxKey];
@@ -425,9 +384,6 @@ export const ThresholdsUpdateSchema = z
     }
   });
 export type ThresholdsUpdate = z.infer<typeof ThresholdsUpdateSchema>;
-
-export const FanCommandSchema = z.object({ mode: FanModeSchema });
-export type FanCommand = z.infer<typeof FanCommandSchema>;
 
 export const NotificationSettingsUpdateSchema = z.object({
   enabled: z.boolean(),
@@ -447,7 +403,6 @@ export interface AlertsFilter {
 export const SocketEventSchemas = {
   telemetry: ReadingSchema,
   'device:status': DeviceSchema,
-  'fan:state': FanStateSchema,
   alert: AlertSchema,
 } as const;
 export type SocketEventName = keyof typeof SocketEventSchemas;

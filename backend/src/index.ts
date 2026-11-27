@@ -4,11 +4,14 @@ import { Expo } from 'expo-server-sdk';
 import { env } from './config/env.js';
 import { closeDatabase } from './db.js';
 import { createDevTools } from './dev/devTools.js';
-import { createApp } from './http/app.js';
+import { createApp, type MqttState } from './http/app.js';
 import { isAllowedOrigin } from './http/cors.js';
-import { createPendingCommands } from './ingest/commands.js';
+import { createCommandRouter, createPendingCommands } from './ingest/commands.js';
 import { createIngest } from './ingest/ingest.js';
 import { createLogger } from './lib/logger.js';
+import { createMqttBridge } from './mqtt/bridge.js';
+import { brokerLabel, connectMqtt } from './mqtt/client.js';
+import { createCommandPublisher } from './mqtt/commands.js';
 import { createPushSender } from './push/sender.js';
 import { createRealtime } from './realtime/socket.js';
 import { createRulesEngine } from './rules/engine.js';
@@ -35,7 +38,17 @@ function lanAddresses(): string[] {
 }
 
 const realtime = createRealtime();
-const commands = createPendingCommands();
+
+// MQTT (EMQX): the ESP32's main transport. Without MQTT_URL only HTTPS readings arrive.
+const mqtt = env.MQTT_URL
+  ? connectMqtt({ url: env.MQTT_URL, username: env.MQTT_USERNAME, password: env.MQTT_PASSWORD })
+  : null;
+if (!mqtt) log.warn('MQTT off: MQTT_URL is empty (readings only over HTTPS POST /api/readings)');
+const mqttState = (): MqttState => (!mqtt ? 'off' : mqtt.connected ? 'connected' : 'disconnected');
+const commands = createCommandRouter(
+  createPendingCommands(),
+  mqtt ? createCommandPublisher(mqtt) : null,
+);
 
 // Expo Push Service → FCM → phone.
 const push = createPushSender({
@@ -88,10 +101,19 @@ const rules = createRulesEngine({
 
 const ingest = createIngest({ realtime, rules, devTools, commands });
 
+const bridge = mqtt ? createMqttBridge({ ingest, commands, realtime, rules }) : null;
+if (mqtt && bridge) {
+  log.info(`MQTT broker: ${brokerLabel(env.MQTT_URL ?? '')}`);
+  mqtt.on('message', (topic, payload, packet) => {
+    bridge.handleMessage(topic, payload, packet.retain);
+  });
+}
+
 const server = createServer(
   createApp({
     ingest,
     commands,
+    mqttState,
     push,
     sms,
     devTools,
@@ -133,6 +155,8 @@ async function shutdown(signal: string): Promise<void> {
   stopRetention();
   stopSmsSweeper();
   push.stop();
+  bridge?.close();
+  await mqtt?.endAsync().catch(() => undefined); // stop new MQTT readings first
   await realtime.close(); // also closes the HTTP server
   await ingest.idle(); // finish alert rules for readings already accepted
   await sms.idle(); // ...and their SMS

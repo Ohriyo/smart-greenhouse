@@ -30,6 +30,9 @@ model Device {
   /// Soil calibration the device reports using (mV in air = 0 %, in water = 100 %).
   soilDryMv  Int?
   soilWetMv  Int?
+  /// How the latest reading arrived: "mqtt" (through the broker) or "https" (POST /api/readings,
+  /// the ESP32's fallback). null = no reading yet.
+  transport  String?
 
   readings   Reading[]
   thresholds Thresholds?

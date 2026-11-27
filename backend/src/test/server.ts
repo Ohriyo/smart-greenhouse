@@ -6,8 +6,14 @@ import type { AddressInfo } from 'node:net';
 import { prisma } from '../db.js';
 import { createDevTools } from '../dev/devTools.js';
 import { createApp } from '../http/app.js';
-import { createPendingCommands } from '../ingest/commands.js';
-import { createIngest } from '../ingest/ingest.js';
+import {
+  createCommandRouter,
+  createPendingCommands,
+  type CommandPublisher,
+  type CommandRouter,
+} from '../ingest/commands.js';
+import { createIngest, type Ingest } from '../ingest/ingest.js';
+import { createMqttBridge, type MqttBridge } from '../mqtt/bridge.js';
 import type { PushSender } from '../push/sender.js';
 import { createRealtime } from '../realtime/socket.js';
 import { createRulesEngine } from '../rules/engine.js';
@@ -31,6 +37,10 @@ export interface TestServer {
   /** http://127.0.0.1:<port> */
   base: string;
   sms: SmsNotifier;
+  ingest: Ingest;
+  commands: CommandRouter;
+  /** The MQTT side, fed by tests with handleMessage (no broker needed). */
+  bridge: MqttBridge;
   /** Waits until the background work (alert rules, SMS) of accepted readings is done. */
   settle(): Promise<void>;
   close(): Promise<void>;
@@ -41,11 +51,18 @@ export interface TestServer {
  * random port. Built fresh per test: the rules engine keeps state in memory.
  */
 export async function startTestServer(
-  opts: { provider?: SmsProvider | null; dryRun?: boolean; clock?: () => number } = {},
+  opts: {
+    provider?: SmsProvider | null;
+    dryRun?: boolean;
+    clock?: () => number;
+    /** Fake broker publish for commands (default: MQTT off). */
+    publisher?: CommandPublisher | null;
+    lastWillGraceMs?: number;
+  } = {},
 ): Promise<TestServer> {
   const clock = opts.clock ?? Date.now;
   const realtime = createRealtime(); // not attached: emits are no-ops
-  const commands = createPendingCommands();
+  const commands = createCommandRouter(createPendingCommands(clock), opts.publisher ?? null);
   const sms = createSmsNotifier({
     store: createPrismaSmsStore(),
     provider: opts.provider ?? null,
@@ -65,9 +82,17 @@ export async function startTestServer(
     clock,
   });
   const ingest = createIngest({ realtime, rules, devTools, commands });
+  const bridge = createMqttBridge({
+    ingest,
+    commands,
+    realtime,
+    rules,
+    ...(opts.lastWillGraceMs !== undefined ? { lastWillGraceMs: opts.lastWillGraceMs } : {}),
+  });
   const app = createApp({
     ingest,
     commands,
+    mqttState: () => (opts.publisher ? 'connected' : 'off'),
     push: noPush,
     sms,
     devTools,
@@ -86,12 +111,16 @@ export async function startTestServer(
   return {
     base: `http://127.0.0.1:${port}`,
     sms,
+    ingest,
+    commands,
+    bridge,
     async settle() {
       await ingest.idle();
       await sms.idle();
     },
     close: () =>
       new Promise<void>((resolve, reject) => {
+        bridge.close();
         server.closeAllConnections();
         server.close((err) => {
           if (err) reject(err);

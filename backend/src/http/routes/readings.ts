@@ -13,7 +13,10 @@ interface ReadingsDeps {
   defaultDeviceId: string;
 }
 
-/** /api/readings: the ESP32 posts here; the app reads the latest value and history. */
+/**
+ * /api/readings: the ESP32 posts here when MQTT is unavailable (its fallback) and the
+ * simulator by default; the app reads the latest value and history.
+ */
 export function readingsRouter({ ingest, deviceApiKey, defaultDeviceId }: ReadingsDeps): Router {
   const router = Router();
 
@@ -21,7 +24,8 @@ export function readingsRouter({ ingest, deviceApiKey, defaultDeviceId }: Readin
   // commands queued for the device (e.g. soil calibration).
   router.post('/', requireKey('X-Device-Key', deviceApiKey, 'DEVICE_API_KEY'), async (req, res) => {
     const body = ReadingBodySchema.parse(req.body);
-    const result = await ingest.ingestReading(body.deviceId ?? defaultDeviceId, body, new Date());
+    const deviceId = body.deviceId ?? defaultDeviceId;
+    const result = await ingest.ingestReading(deviceId, body, new Date(), 'https');
     res.status(201).json(result);
   });
 

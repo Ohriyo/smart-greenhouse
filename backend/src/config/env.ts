@@ -94,6 +94,22 @@ const EnvSchema = z.object({
   DEVICE_API_KEY: z
     .string({ error: 'is required: the key the ESP32 sends as X-Device-Key' })
     .min(16, 'must be at least 16 characters (use a long random string)'),
+  /**
+   * MQTT broker (docs/setup-emqx.md), e.g. mqtts://xxxx.ala.asia-southeast1.emqxsl.com:8883.
+   * Empty = MQTT off: readings only arrive over HTTPS (POST /api/readings).
+   */
+  MQTT_URL: optionalString(
+    z
+      .string()
+      .regex(
+        /^(mqtts?|wss?):\/\/[^\s/?#]+/,
+        'must be a broker URL like mqtts://<your-deployment>.emqxsl.com:8883',
+      ),
+  ),
+  /** The backend's own broker login (EMQX → Access Control → Authentication). */
+  MQTT_USERNAME: optionalString(z.string().min(1)),
+  /** Secret. */
+  MQTT_PASSWORD: optionalString(z.string().min(1)),
   CORS_ORIGIN: OriginListSchema,
   /** Device used when a reading or a query names none (single greenhouse). */
   DEFAULT_DEVICE_ID: z.preprocess(blankToUndefined, DeviceIdSchema.default('gh-01')),
@@ -183,6 +199,23 @@ const parsed = EnvSchema.superRefine((e, ctx) => {
         message: `is required when SMS_DRY_RUN=false (real SMS) with SMS_PROVIDER=${e.SMS_PROVIDER}`,
       });
     }
+  }
+  if (
+    e.MQTT_URL !== undefined &&
+    (e.MQTT_USERNAME === undefined) !== (e.MQTT_PASSWORD === undefined)
+  ) {
+    ctx.addIssue({
+      code: 'custom',
+      path: [e.MQTT_USERNAME === undefined ? 'MQTT_USERNAME' : 'MQTT_PASSWORD'],
+      message: 'set both MQTT_USERNAME and MQTT_PASSWORD (or neither)',
+    });
+  }
+  if (e.MQTT_URL !== undefined && /^\w+:\/\/[^/]*@/.test(e.MQTT_URL)) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['MQTT_URL'],
+      message: 'must not contain the login: use MQTT_USERNAME and MQTT_PASSWORD',
+    });
   }
   if (e.NODE_ENV === 'production' && e.ADMIN_API_KEY === undefined) {
     ctx.addIssue({

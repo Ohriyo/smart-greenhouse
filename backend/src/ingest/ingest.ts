@@ -7,24 +7,29 @@ import type { RulesEngine } from '../rules/engine.js';
 import type { Reading } from '../generated/prisma/client.js';
 import { setPresence, type PresenceResult } from '../services/devices.js';
 import { pickTimestamp, saveReading } from '../services/readings.js';
-import type { PendingCommands } from './commands.js';
+import type { CommandRouter, Transport } from './commands.js';
 
 const log = createLogger('ingest');
 
 export interface IngestResult {
   /** The stored reading. */
   reading: ReadingDto;
-  /** Commands queued for this device (delivered once). */
+  /** Commands queued for this device (delivered once: in the HTTP response, or published over MQTT). */
   commands: DeviceCommand[];
 }
 
 export interface Ingest {
   /**
-   * Stores a reading from POST /api/readings and resolves once it is saved.
-   * Alert rules, SMS/push and live updates run afterwards in the background:
-   * their failures are logged and never reach the device's request.
+   * Stores a reading (MQTT telemetry or POST /api/readings) and resolves once it is
+   * saved. Alert rules, SMS/push and live updates run afterwards in the background:
+   * their failures are logged and never reach the device.
    */
-  ingestReading(deviceId: string, body: ReadingBody, receivedAt: Date): Promise<IngestResult>;
+  ingestReading(
+    deviceId: string,
+    body: ReadingBody,
+    receivedAt: Date,
+    via: Transport,
+  ): Promise<IngestResult>;
   /** Resolves when all queued background work has finished (tests, shutdown). */
   idle(): Promise<void>;
 }
@@ -34,7 +39,7 @@ interface IngestDeps {
   rules: RulesEngine;
   /** Remembers which devices are the simulator (dev-only Demo tools). */
   devTools: Pick<DevTools, 'noteTelemetry'>;
-  commands: PendingCommands;
+  commands: Pick<CommandRouter, 'takeFor'>;
 }
 
 export function createIngest({ realtime, rules, devTools, commands }: IngestDeps): Ingest {
@@ -63,7 +68,7 @@ export function createIngest({ realtime, rules, devTools, commands }: IngestDeps
   }
 
   return {
-    ingestReading(deviceId, body, receivedAt) {
+    ingestReading(deviceId, body, receivedAt, via) {
       return new Promise<IngestResult>((resolve, reject) => {
         enqueue(deviceId, async () => {
           // 1. Store (the request waits for this part only).
@@ -75,25 +80,36 @@ export function createIngest({ realtime, rules, devTools, commands }: IngestDeps
               uptimeSec: body.uptimeSec,
               soilDryMv: body.soilDryMv,
               soilWetMv: body.soilWetMv,
+              transport: via,
             });
             reading = await saveReading(deviceId, body, pickTimestamp(body.ts, receivedAt));
           } catch (err) {
             reject(err instanceof Error ? err : new Error(String(err)));
             return;
           }
-          resolve({ reading: toReadingDto(reading), commands: commands.take(deviceId) });
+          resolve({ reading: toReadingDto(reading), commands: commands.takeFor(deviceId, via) });
 
           // 2. Everything else, after the device got its answer.
           logSensorErrors(deviceId, body.errors);
           devTools.noteTelemetry(deviceId, body.simulator);
+          if (presence.transportChanged) {
+            log.info(
+              via === 'mqtt'
+                ? `${deviceId} sends over MQTT`
+                : `${deviceId} sends over HTTPS${presence.created ? '' : ' (MQTT fallback)'}`,
+            );
+          }
           if (presence.calibrationChanged) {
             log.info(
               `${deviceId} soil calibration now dry ${body.soilDryMv} / wet ${body.soilWetMv} mV`,
             );
           }
           const deviceDto = toDeviceDto(presence.device);
-          // device:status: online/offline changed, or a new soil calibration (acknowledgement).
-          if (presence.changed || presence.calibrationChanged) realtime.emitDeviceStatus(deviceDto);
+          // device:status: online/offline, the transport or the soil calibration
+          // (acknowledgement) changed.
+          if (presence.changed || presence.calibrationChanged || presence.transportChanged) {
+            realtime.emitDeviceStatus(deviceDto);
+          }
           realtime.emitTelemetry(toReadingDto(reading));
           if (presence.changed) {
             log.info(`${deviceId} is online`);

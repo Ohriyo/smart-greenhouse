@@ -26,6 +26,8 @@ export interface DeviceDto {
   /** Soil calibration the device reports using (mV); null if never reported. */
   soilDryMv: number | null;
   soilWetMv: number | null;
+  /** How the latest reading arrived: "mqtt" (broker) or "https" (fallback); null before any. */
+  transport: 'mqtt' | 'https' | null;
 }
 
 /** The SMS sent for an alert (newest attempt). */
@@ -97,6 +99,7 @@ export function toDeviceDto(d: Device): DeviceDto {
     uptimeAt: d.uptimeAt?.toISOString() ?? null,
     soilDryMv: d.soilDryMv,
     soilWetMv: d.soilWetMv,
+    transport: d.transport === 'mqtt' || d.transport === 'https' ? d.transport : null,
   };
 }
 

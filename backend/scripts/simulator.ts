@@ -1,22 +1,31 @@
-// Dev-only ESP32 simulator. Sends readings exactly like the firmware
-// (POST /api/readings with the X-Device-Key header, docs/api-contract.md §4) and
-// applies the commands that come back in the response: soil calibration, and the
-// scenarios of the app's dev-only Demo sheet (backend DEV_TOOLS=true).
+// Dev-only ESP32 simulator. Behaves like the firmware (docs/api-contract.md §4):
+// - MQTT (when MQTT_URL is set): telemetry on greenhouse/{id}/telemetry, retained
+//   "online" on greenhouse/{id}/status with the Last Will "offline", commands from
+//   greenhouse/{id}/command; while the broker is unreachable it falls back to HTTPS.
+// - HTTPS: POST /api/readings with X-Device-Key; commands come back in the response.
+// Commands: soil calibration, and the scenarios of the app's dev-only Demo sheet
+// (backend DEV_TOOLS=true).
 //
-//   npm run sim                          gh-01 → http://localhost:4000, every 30 s
+//   npm run sim                          gh-01 every 30 s (MQTT if MQTT_URL is set, else HTTPS)
+//   npm run sim -- --transport http      HTTPS only
 //   npm run sim -- --interval 5          a reading every 5 s (snappier demos)
 //   npm run sim -- --hot                 force high temperature (alerts)
 //   npm run sim -- --dry                 soil dries fast, no watering (alerts)
 //   npm run sim -- --stall-after 60      stop sending after 60 s (offline test)
 //   npm run sim -- --url https://<your-service>.onrender.com --device gh-02
 //
-// The device key is DEVICE_API_KEY from backend/.env, or --key.
+// The device key is DEVICE_API_KEY from backend/.env, or --key. The broker login is
+// --mqtt-user / --mqtt-pass, or MQTT_USERNAME / MQTT_PASSWORD from backend/.env.
+// Ctrl+C drops the MQTT connection without a goodbye, so the broker sends the Last Will.
+import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
+import { connect, type MqttClient } from 'mqtt';
 import { z } from 'zod';
 import { DeviceCommandSchema, DeviceIdSchema, type DeviceCommand } from '../src/domain/schemas.js';
 import type { SimScenario } from '../src/dev/scenarios.js';
+import { errorText } from '../src/mqtt/client.js';
 
 // backend/.env for the defaults (without the backend's full config: the
 // simulator needs no database and may target a remote backend).
@@ -33,6 +42,10 @@ const HELP = `Usage: npm run sim -- [options]
   --stall-after <sec>  stop sending after <sec> (the backend marks it offline)
   --url <base-url>     backend (default http://localhost:<PORT from .env or 4000>)
   --key <key>          device key (default DEVICE_API_KEY from backend/.env)
+  --transport <t>      mqtt or http (default mqtt when MQTT_URL is set)
+  --mqtt-url <url>     broker (default MQTT_URL from backend/.env)
+  --mqtt-user <name>   broker login (default MQTT_USERNAME)
+  --mqtt-pass <pass>   broker password (default MQTT_PASSWORD)
   -h, --help`;
 
 const { values: raw } = parseArgs({
@@ -44,6 +57,10 @@ const { values: raw } = parseArgs({
     'stall-after': { type: 'string' },
     url: { type: 'string' },
     key: { type: 'string' },
+    transport: { type: 'string' },
+    'mqtt-url': { type: 'string' },
+    'mqtt-user': { type: 'string' },
+    'mqtt-pass': { type: 'string' },
     help: { type: 'boolean', short: 'h', default: false },
   },
 });
@@ -51,6 +68,13 @@ const { values: raw } = parseArgs({
 if (raw.help) {
   console.log(HELP);
   process.exit(0);
+}
+
+function blank(v: string | undefined): boolean {
+  return v === undefined || v.trim() === '';
+}
+function nonBlank(v: string | undefined): string | undefined {
+  return blank(v) ? undefined : v?.trim();
 }
 
 const OptionsSchema = z.object({
@@ -61,6 +85,13 @@ const OptionsSchema = z.object({
   stallAfter: z.coerce.number().positive().optional(),
   url: z.url({ protocol: /^https?$/ }).transform((u) => u.replace(/\/+$/, '')),
   key: z.string({ error: 'missing: set DEVICE_API_KEY in backend/.env or pass --key' }).min(1),
+  transport: z.enum(['mqtt', 'http']),
+  mqttUrl: z
+    .string()
+    .regex(/^(mqtts?|wss?):\/\//, 'must be like mqtts://host:8883')
+    .optional(),
+  mqttUser: z.string().min(1).optional(),
+  mqttPass: z.string().min(1).optional(),
 });
 
 const parsedOpts = OptionsSchema.safeParse({
@@ -71,12 +102,20 @@ const parsedOpts = OptionsSchema.safeParse({
   stallAfter: raw['stall-after'],
   url: raw.url ?? `http://localhost:${process.env.PORT ?? '4000'}`,
   key: raw.key ?? process.env.DEVICE_API_KEY,
+  transport: raw.transport ?? (blank(raw['mqtt-url'] ?? process.env.MQTT_URL) ? 'http' : 'mqtt'),
+  mqttUrl: nonBlank(raw['mqtt-url'] ?? process.env.MQTT_URL),
+  mqttUser: nonBlank(raw['mqtt-user'] ?? process.env.MQTT_USERNAME),
+  mqttPass: nonBlank(raw['mqtt-pass'] ?? process.env.MQTT_PASSWORD),
 });
 if (!parsedOpts.success) {
   console.error(`Invalid options:\n${z.prettifyError(parsedOpts.error)}\n\n${HELP}`);
   process.exit(1);
 }
 const opts = parsedOpts.data;
+if (opts.transport === 'mqtt' && !opts.mqttUrl) {
+  console.error('--transport mqtt needs a broker: set MQTT_URL in backend/.env or pass --mqtt-url');
+  process.exit(1);
+}
 
 // ---------- Simulation model ----------
 
@@ -182,6 +221,88 @@ function readingBody() {
   };
 }
 
+// ---------- MQTT ----------
+
+const topic = {
+  telemetry: `greenhouse/${opts.device}/telemetry`,
+  status: `greenhouse/${opts.device}/status`,
+  command: `greenhouse/${opts.device}/command`,
+};
+
+let mqtt: MqttClient | null = null;
+
+function startMqtt(url: string): MqttClient {
+  const client = connect(url, {
+    clientId: `${opts.device}-sim-${randomUUID().slice(0, 6)}`,
+    ...(opts.mqttUser !== undefined ? { username: opts.mqttUser } : {}),
+    ...(opts.mqttPass !== undefined ? { password: opts.mqttPass } : {}),
+    protocolVersion: 4,
+    clean: true,
+    keepalive: 15,
+    reconnectPeriod: 5_000,
+    reconnectOnConnackError: true,
+    connectTimeout: 15_000,
+    // The broker publishes this (retained) when the connection dies without a goodbye.
+    will: { topic: topic.status, payload: Buffer.from('offline'), qos: 1, retain: true },
+  });
+  let lastError = '';
+  let up = false;
+  client.on('connect', () => {
+    lastError = '';
+    up = true;
+    console.log(`MQTT connected to ${new URL(url).host}`);
+    client.publish(topic.status, 'online', { qos: 1, retain: true });
+    client.subscribe(topic.command, { qos: 1 });
+  });
+  client.on('close', () => {
+    // Once per outage, not on every failed retry.
+    if (up && !stopping) console.warn('MQTT disconnected: readings go over HTTPS until it is back');
+    up = false;
+  });
+  client.on('error', (err) => {
+    const text = errorText(err);
+    if (text !== lastError) console.error(`MQTT: ${text}`);
+    lastError = text;
+  });
+  client.on('message', (_topic, payload) => {
+    let json: unknown;
+    try {
+      json = JSON.parse(payload.toString('utf8')) as unknown;
+    } catch {
+      json = null;
+    }
+    const cmd = DeviceCommandSchema.safeParse(json);
+    if (cmd.success) void handleCommand(cmd.data);
+    else console.warn(`ignored invalid command: ${payload.toString('utf8').slice(0, 120)}`);
+  });
+  return client;
+}
+
+/** True if the reading went out over MQTT (QoS 1: the broker acknowledged it). */
+async function publishReading(body: ReturnType<typeof readingBody>): Promise<boolean> {
+  if (!mqtt?.connected) return false;
+  try {
+    await mqtt.publishAsync(topic.telemetry, JSON.stringify(body), { qos: 1 });
+    return true;
+  } catch (err) {
+    console.warn(`MQTT publish failed (${err instanceof Error ? err.message : String(err)})`);
+    return false;
+  }
+}
+
+/** Like the firmware: GET /health every 10 min so a sleeping Render service wakes up. */
+const KEEP_AWAKE_MS = 10 * 60_000;
+async function keepAwake(): Promise<void> {
+  try {
+    const res = await fetch(`${opts.url}/health`, {
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
+    if (!res.ok) console.warn(`keep-awake ping: HTTP ${res.status}`);
+  } catch (err) {
+    console.warn(`keep-awake ping failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
 // ---------- HTTP ----------
 
 /** A sleeping Render service holds the first request while it starts (~1 min). */
@@ -194,9 +315,22 @@ const ResponseSchema = z.object({ commands: z.array(z.unknown()).default([]) });
 let stalled = false;
 let stopping = false;
 
+function logReading(body: ReturnType<typeof readingBody>, via: string, reason: string): void {
+  const time = new Date().toLocaleTimeString();
+  console.log(
+    `${time} ${opts.device} [${via}] T=${body.temperature}°C RH=${body.humidity}% ` +
+      `soil=${body.soilMoisture}% lux=${body.lux}` +
+      (reason ? `  ← ${reason}` : ''),
+  );
+}
+
 async function sendReading(reason = ''): Promise<void> {
   if (stalled || stopping) return;
   const body = readingBody();
+  if (await publishReading(body)) {
+    logReading(body, 'MQTT', reason);
+    return; // commands arrive on the command topic
+  }
   let res: Response;
   try {
     res = await fetch(`${opts.url}/api/readings`, {
@@ -217,12 +351,7 @@ async function sendReading(reason = ''): Promise<void> {
     console.error(`HTTP ${res.status}: ${(await res.text()).slice(0, 300)}`);
     return;
   }
-  const time = new Date().toLocaleTimeString();
-  console.log(
-    `${time} ${opts.device} T=${body.temperature}°C RH=${body.humidity}% soil=${body.soilMoisture}% ` +
-      `lux=${body.lux}` +
-      (reason ? `  ← ${reason}` : ''),
-  );
+  logReading(body, mqtt ? 'HTTPS fallback' : 'HTTPS', reason);
   const parsed = ResponseSchema.safeParse(await res.json().catch(() => null));
   if (!parsed.success) return;
   for (const raw of parsed.data.commands) {
@@ -269,6 +398,19 @@ function applyScenario(scenario: SimScenario): void {
 
 /** One reading per interval; the next is scheduled after the previous finished. Ctrl+C ends it. */
 async function loop(): Promise<void> {
+  if (opts.transport === 'mqtt' && opts.mqttUrl) {
+    const client = startMqtt(opts.mqttUrl);
+    mqtt = client;
+    // Give the first connection a moment so the first reading can use it.
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, 10_000);
+      client.once('connect', () => {
+        clearTimeout(timer);
+        resolve();
+      });
+    });
+    setInterval(() => void keepAwake(), KEEP_AWAKE_MS).unref();
+  }
   await sendReading('start');
   for (;;) {
     await new Promise((resolve) => setTimeout(resolve, opts.interval * 1000));
@@ -289,12 +431,22 @@ if (opts.stallAfter !== undefined) {
 process.on('SIGINT', () => {
   if (stopping) process.exit(1);
   stopping = true;
-  console.log('stopped (the backend marks the device offline after 3 missed readings)');
+  console.log(
+    mqtt
+      ? 'stopped without an MQTT goodbye: the broker publishes the Last Will "offline"'
+      : 'stopped (the backend marks the device offline after 3 missed readings)',
+  );
+  // Destroy the socket instead of a clean DISCONNECT, like a power cut (Last Will).
+  mqtt?.stream.destroy();
   process.exit(0);
 });
 
+const target =
+  opts.transport === 'mqtt' && opts.mqttUrl
+    ? `MQTT ${new URL(opts.mqttUrl).host} (HTTPS fallback ${opts.url})`
+    : opts.url;
 console.log(
-  `simulator ${opts.device} → ${opts.url} every ${opts.interval} s ` +
+  `simulator ${opts.device} → ${target} every ${opts.interval} s ` +
     `${sim.hot ? 'HOT ' : ''}${sim.dry ? 'DRY ' : ''}— Ctrl+C to stop`,
 );
 void loop();

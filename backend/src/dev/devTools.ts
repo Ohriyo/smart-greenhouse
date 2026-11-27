@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { PendingCommands } from '../ingest/commands.js';
+import type { CommandRouter } from '../ingest/commands.js';
 import { createLogger } from '../lib/logger.js';
 import type { SimScenario } from './scenarios.js';
 
@@ -21,8 +21,8 @@ export interface DevTools {
 
 interface Deps {
   enabled: boolean;
-  /** Scenarios travel like any device command: in the response to the next reading. */
-  commands: Pick<PendingCommands, 'enqueue'>;
+  /** Scenarios travel like any device command (MQTT, or with the next HTTPS reading). */
+  commands: Pick<CommandRouter, 'enqueue'>;
   /** Injected in tests. */
   clock?: () => number;
 }
@@ -56,7 +56,7 @@ export function createDevTools({ enabled, commands, clock = Date.now }: Deps): D
         scenario,
         issuedAt: new Date(clock()).toISOString(),
       });
-      log.info(`${deviceId} <- scenario ${scenario} (with its next reading)`);
+      log.info(`${deviceId} <- scenario ${scenario}`);
     },
   };
 }

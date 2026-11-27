@@ -11,7 +11,7 @@ import {
   ThresholdsBodySchema,
   type DeviceCommand,
 } from '../../domain/schemas.js';
-import type { PendingCommands } from '../../ingest/commands.js';
+import type { CommandRouter } from '../../ingest/commands.js';
 import type { Realtime } from '../../realtime/socket.js';
 import { getDeviceOr404, listDevices, renameDevice } from '../../services/devices.js';
 import { getHeatmap } from '../../services/heatmap.js';
@@ -27,7 +27,10 @@ function deviceIdParam(raw: string | undefined): string {
   return parsed.data;
 }
 
-export function devicesRouter(commands: PendingCommands, realtime: Realtime): Router {
+export function devicesRouter(
+  commands: Pick<CommandRouter, 'deliver'>,
+  realtime: Realtime,
+): Router {
   const router = Router();
 
   router.get('/', async (_req, res) => {
@@ -96,8 +99,10 @@ export function devicesRouter(commands: PendingCommands, realtime: Realtime): Ro
   });
 
   // The device stores its *current* soil reading as 0 % (dry: sensor in air) or
-  // 100 % (wet: sensor in water). The command goes out in the response to its next
-  // reading; the new soilDryMv/soilWetMv in a later reading acknowledge it.
+  // 100 % (wet: sensor in water). The command is published over MQTT at once when the
+  // device is on MQTT, otherwise it goes out in the response to its next HTTPS reading;
+  // the new soilDryMv/soilWetMv in a later reading acknowledge it.
+  // `status` stays "queued" (not yet applied); `delivery` says which way it went.
   router.post('/:id/soil-calibration', async (req, res) => {
     const device = await getDeviceOr404(deviceIdParam(req.params.id));
     const { point } = SoilCalibrationBodySchema.parse(req.body);
@@ -110,8 +115,10 @@ export function devicesRouter(commands: PendingCommands, realtime: Realtime): Ro
       point,
       issuedAt: new Date().toISOString(),
     };
-    commands.enqueue(device.id, command);
-    res.status(202).json({ commandId: command.id, deviceId: device.id, point, status: 'queued' });
+    const delivery = await commands.deliver(device.id, command);
+    res
+      .status(202)
+      .json({ commandId: command.id, deviceId: device.id, point, status: 'queued', delivery });
   });
 
   return router;

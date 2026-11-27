@@ -8,6 +8,8 @@ export interface DeviceReport {
   uptimeSec?: number;
   soilDryMv?: number;
   soilWetMv?: number;
+  /** How this reading arrived. */
+  transport?: 'mqtt' | 'https';
 }
 
 export interface PresenceResult {
@@ -20,6 +22,8 @@ export interface PresenceResult {
   seenBefore: boolean;
   /** true when the reported soil calibration differs from the stored one (acknowledgement). */
   calibrationChanged: boolean;
+  /** true when the reading arrived over a different transport than the previous one. */
+  transportChanged: boolean;
 }
 
 /** Prisma data for the reported fields that are present (undefined = not reported). */
@@ -30,6 +34,7 @@ function reportData(report: DeviceReport | undefined, at: Date | null) {
     ...(report.uptimeSec !== undefined && at ? { uptimeSec: report.uptimeSec, uptimeAt: at } : {}),
     ...(report.soilDryMv !== undefined ? { soilDryMv: report.soilDryMv } : {}),
     ...(report.soilWetMv !== undefined ? { soilWetMv: report.soilWetMv } : {}),
+    ...(report.transport !== undefined ? { transport: report.transport } : {}),
   };
 }
 
@@ -58,7 +63,14 @@ export async function setPresence(
         thresholds: { create: {} },
       },
     });
-    return { device, changed: true, created: true, seenBefore: false, calibrationChanged: false };
+    return {
+      device,
+      changed: true,
+      created: true,
+      seenBefore: false,
+      calibrationChanged: false,
+      transportChanged: device.transport !== null,
+    };
   }
   const device = await prisma.device.update({
     where: { id },
@@ -76,6 +88,7 @@ export async function setPresence(
     seenBefore: existing.lastSeen !== null,
     calibrationChanged:
       existing.soilDryMv !== device.soilDryMv || existing.soilWetMv !== device.soilWetMv,
+    transportChanged: existing.transport !== device.transport,
   };
 }
 
@@ -112,6 +125,18 @@ export async function resolveDevice(
     (await prisma.device.findUnique({ where: { id: defaultId } })) ??
     (await prisma.device.findFirst({ orderBy: { id: 'asc' } }))
   );
+}
+
+/**
+ * Marks the device offline unless a reading arrived after `since` (used after its
+ * MQTT Last Will, once the grace period has passed). Returns the device if it flipped.
+ */
+export async function markOfflineIfSilentSince(id: string, since: Date): Promise<Device | null> {
+  const { count } = await prisma.device.updateMany({
+    where: { id, online: true, OR: [{ lastSeen: null }, { lastSeen: { lte: since } }] },
+    data: { online: false },
+  });
+  return count === 1 ? prisma.device.findUnique({ where: { id } }) : null;
 }
 
 /** Extra slack on top of 3 intervals for network jitter. */

@@ -1,7 +1,7 @@
 import express, { type Express, type RequestHandler } from 'express';
 import { prisma } from '../db.js';
 import type { DevTools } from '../dev/devTools.js';
-import type { PendingCommands } from '../ingest/commands.js';
+import type { CommandRouter } from '../ingest/commands.js';
 import type { Ingest } from '../ingest/ingest.js';
 import { createLogger } from '../lib/logger.js';
 import type { PushSender } from '../push/sender.js';
@@ -34,9 +34,13 @@ export interface AppConfig {
   defaultDeviceId: string;
 }
 
+/** The backend's broker connection: "off" when MQTT_URL is not set. */
+export type MqttState = 'connected' | 'disconnected' | 'off';
+
 export interface AppDeps {
   ingest: Ingest;
-  commands: PendingCommands;
+  commands: Pick<CommandRouter, 'deliver'>;
+  mqttState: () => MqttState;
   push: PushSender;
   sms: SmsNotifier;
   devTools: DevTools;
@@ -88,7 +92,7 @@ const requestLog: RequestHandler = (req, res, next) => {
 };
 
 export function createApp(deps: AppDeps): Express {
-  const { ingest, commands, push, sms, devTools, realtime, config } = deps;
+  const { ingest, commands, mqttState, push, sms, devTools, realtime, config } = deps;
   const app = express();
   app.disable('x-powered-by');
   // Render (and Vercel's proxy, for the web app) sit in front: trust one proxy hop.
@@ -100,13 +104,15 @@ export function createApp(deps: AppDeps): Express {
 
   const uptimeSec = () => Math.round((Date.now() - startedAt) / 1000);
 
-  // Render's health check: always 200 while the process runs (a database outage
-  // must not make Render restart the service in a loop); `db` reports the database.
+  // Render's health check and the ESP32's keep-awake ping: always 200 while the
+  // process runs (a database outage must not make Render restart the service in a
+  // loop); `db` and `mqtt` report the database and the broker connection.
   app.get('/health', async (_req, res) => {
     const db = await databaseStatus();
     res.json({
       status: db === 'ok' ? 'ok' : 'degraded',
       db,
+      mqtt: mqttState(),
       time: new Date().toISOString(),
       uptimeSec: uptimeSec(),
     });
@@ -118,6 +124,7 @@ export function createApp(deps: AppDeps): Express {
     res.status(db === 'ok' ? 200 : 503).json({
       status: db === 'ok' ? 'ok' : 'degraded',
       db,
+      mqtt: mqttState(),
       uptimeSec: uptimeSec(),
       devTools: devTools.enabled,
       time: new Date().toISOString(),

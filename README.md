@@ -1,11 +1,14 @@
 # Smart Greenhouse (ETanim)
 
-An ESP32 reads air temperature and humidity (DHT22), light (BH1750) and soil moisture (capacitive v1.2) and posts a reading every 30 s over HTTPS. A Node.js backend stores the readings in PostgreSQL, raises alerts, and texts the owner when a value crosses its limit (through textbee: an Android phone sends the SMS from its own SIM). The ETanim app (Android APK and a web version) shows live values, history, alerts and the limits.
+An ESP32 reads air temperature and humidity (DHT22), light (BH1750) and soil moisture (capacitive v1.2) and publishes a reading every 30 s over **MQTT** to a hosted broker (EMQX Serverless, TLS); if the broker can't be reached it posts the same reading over HTTPS instead. A Node.js backend subscribes to the broker, stores the readings in PostgreSQL, raises alerts, and texts the owner when a value crosses its limit (through textbee: an Android phone sends the SMS from its own SIM). The ETanim app (Android APK and a web version) shows live values, history, alerts and the limits.
 
 ```
-                     HTTPS POST /api/readings every 30 s (X-Device-Key)
- ESP32 (Wi-Fi) ─────────────────────────────────────────────┐
-                                                            ▼
+                 MQTT/TLS 8883, every 30 s              MQTT/TLS
+ ESP32 (Wi-Fi) ───────────────────► EMQX Serverless ────────────────┐
+   │  fallback: HTTPS POST /api/readings                            │
+   │  + GET /health every 10 min (keeps Render awake)               │
+   └────────────────────────────────────────────────┐               │
+                                                    ▼               ▼
  Android app (EAS APK) ──┐  REST + Socket.IO   ┌──────────────────────────┐   SQL (TLS)   ┌──────────────┐
                          ├────────────────────►│ backend (Render, free)   │──────────────►│ Neon         │
  Web app (Vercel) ───────┘  (+ poll every 10 s)│ Node 24 · Express ·      │               │ PostgreSQL   │
@@ -17,10 +20,10 @@ An ESP32 reads air temperature and humidity (DHT22), light (BH1750) and soil moi
 
 | Folder | What |
 |---|---|
-| `backend/` | Node.js + TypeScript: `POST /api/readings`, rules engine, SMS, REST, Socket.IO, simulator, tests |
+| `backend/` | Node.js + TypeScript: MQTT subscriber (EMQX) + `POST /api/readings` fallback, rules engine, SMS, REST, Socket.IO, simulator, tests |
 | `mobile/` | Expo (React Native) app for Android and the web |
 | `firmware/` | ESP32 Arduino sketch `firmware/SmartGreenhouse/` (+ bring-up tests): [docs/firmware.md](docs/firmware.md) |
-| `docs/` | [API contract](docs/api-contract.md) (single source of truth), [SMS setup](docs/setup-sms.md), [push setup](docs/setup-push.md), [firmware](docs/firmware.md), Postman collection |
+| `docs/` | [API contract](docs/api-contract.md) (single source of truth), [EMQX (MQTT) setup](docs/setup-emqx.md), [SMS setup](docs/setup-sms.md), [push setup](docs/setup-push.md), [firmware](docs/firmware.md), Postman collection |
 | `render.yaml` | Render Blueprint for the backend |
 
 ## Environment variables
@@ -31,7 +34,9 @@ An ESP32 reads air temperature and humidity (DHT22), light (BH1750) and soil moi
 |---|---|---|---|
 | `DATABASE_URL` | yes | | PostgreSQL URL. Neon: the **pooled** string (`…-pooler…`, `?sslmode=require&channel_binding=require`). Any non-local host always uses verified TLS |
 | `DIRECT_URL` | Neon | `DATABASE_URL` | Neon's **direct** string, used by migrations |
-| `DEVICE_API_KEY` | yes | | Shared secret the ESP32 sends as `X-Device-Key` (≥ 16 characters) |
+| `DEVICE_API_KEY` | yes | | Shared secret the ESP32 sends as `X-Device-Key` on its HTTPS fallback (≥ 16 characters) |
+| `MQTT_URL` | for MQTT | empty = MQTT off | The broker: `mqtts://<EMQX address>:8883` ([docs/setup-emqx.md](docs/setup-emqx.md)) |
+| `MQTT_USERNAME`, `MQTT_PASSWORD` | with `MQTT_URL` | | The **backend's** EMQX login (password is a secret) |
 | `ADMIN_API_KEY` | in production | | `X-Admin-Key` for `POST /api/alerts/test` (the real test SMS) |
 | `CORS_ORIGIN` | for the web app | | Browser origins allowed to call the API, comma-separated, e.g. `https://etanim.vercel.app` (localhost is always allowed) |
 | `ALERT_PHONE_NUMBERS` | for SMS | empty = no SMS | PH mobiles, comma-separated: `09171234567,09181234567` |
@@ -53,7 +58,7 @@ An ESP32 reads air temperature and humidity (DHT22), light (BH1750) and soil moi
 | `PUSH_ENABLED`, `EXPO_ACCESS_TOKEN` | | `true`, none | Push notifications ([docs/setup-push.md](docs/setup-push.md)) |
 | `DEV_TOOLS` | | `false` | Dev-only demo endpoints (simulator scenarios) |
 
-**App:** `EXPO_PUBLIC_API_URL`, the backend's base URL, set at build time: `mobile/.env` locally, `mobile/eas.json` (preview profile) for the APK, Vercel → Environment Variables for the web app. **Firmware:** `firmware/SmartGreenhouse/secrets.h` (git-ignored; template `secrets.example.h`): `WIFI_SSID`, `WIFI_PASSWORD`, `SERVER_URL`, `DEVICE_KEY`.
+**App:** `EXPO_PUBLIC_API_URL`, the backend's base URL, set at build time: `mobile/.env` locally, `mobile/eas.json` (preview profile) for the APK, Vercel → Environment Variables for the web app. **Firmware:** `firmware/SmartGreenhouse/secrets.h` (git-ignored; template `secrets.example.h`): `WIFI_SSID`, `WIFI_PASSWORD`, `MQTT_HOST`, `MQTT_PORT`, `MQTT_USERNAME`, `MQTT_PASSWORD` (the **device's** EMQX login), `SERVER_URL`, `DEVICE_KEY`.
 
 No secret is in git: `.env`, `.env.*` (except the examples) and `secrets.h` are ignored.
 
@@ -69,12 +74,13 @@ npx prisma migrate deploy      # creates the tables
 npm run dev                    # backend on http://localhost:4000
 ```
 
-In `backend/.env` set at least `DATABASE_URL` (local: `postgresql://postgres:<password>@localhost:5432/greenhouse`; URL-encode special characters in the password) and `DEVICE_API_KEY` (generate one: `node -e "console.log(require('crypto').randomBytes(24).toString('base64url'))"`).
+In `backend/.env` set at least `DATABASE_URL` (local: `postgresql://postgres:<password>@localhost:5432/greenhouse`; URL-encode special characters in the password) and `DEVICE_API_KEY` (generate one: `node -e "console.log(require('crypto').randomBytes(24).toString('base64url'))"`). For MQTT also `MQTT_URL`, `MQTT_USERNAME`, `MQTT_PASSWORD` (EMQX, [docs/setup-emqx.md](docs/setup-emqx.md)); leave them empty and everything runs over HTTPS. **If your `backend/.env` is from before the cloud setup, recreate it from `.env.example`:** an old `MQTT_URL=mqtt://<laptop IP>:1883` line would now be used.
 
 ```powershell
-# second terminal: a simulated ESP32 that posts every 30 s (gh-01)
+# second terminal: a simulated ESP32 (gh-01), every 30 s: over MQTT when MQTT_URL is set, else HTTPS
 cd backend
-npm run sim                    # options: npm run sim -- --help  (--hot, --dry, --interval 5, --url …)
+npm run sim -- --mqtt-user greenhouse-device --mqtt-pass <device password>   # or just: npm run sim
+# options: npm run sim -- --help  (--hot, --dry, --interval 5, --url …, --transport http)
 
 # third terminal: the app
 cd mobile
@@ -97,15 +103,17 @@ npx expo start                 # scan the QR code (Expo Go or the development bu
 
 ## Deploy
 
-Order: database → backend → web app → APK → firmware.
+Order: broker → database → backend → web app → APK → firmware.
 
+0. **EMQX** (MQTT broker): create the free Serverless deployment and two logins (device, backend): [docs/setup-emqx.md](docs/setup-emqx.md) steps 1–3.
 1. **Neon** (<https://neon.tech>): create a project, region **AWS Asia Pacific (Singapore)**. From **Connect** copy two connection strings: **pooled** (toggle *Connection pooling* on; host contains `-pooler`) and **direct** (toggle off).
 2. **Render** (<https://render.com>): push this repo to GitHub, then **New → Blueprint** → pick the repo. Render reads `render.yaml` and asks for the `sync: false` values:
    - `DATABASE_URL` = the pooled string, `DIRECT_URL` = the direct string.
+   - `MQTT_URL` = `mqtts://<EMQX address>:8883`, `MQTT_USERNAME` / `MQTT_PASSWORD` = the **backend's** EMQX login.
    - `CORS_ORIGIN`: leave empty for now (step 4). `ALERT_PHONE_NUMBERS`: your numbers, or empty. `TEXTBEE_*`: empty while `SMS_DRY_RUN=true`.
    - `DEVICE_API_KEY` and `ADMIN_API_KEY` are generated. View them under the service's **Environment**.
 
-   What `render.yaml` sets up: free plan, Singapore, root `backend`; build `npm ci --include=dev && npm run build && npx prisma migrate deploy` (the free plan has no pre-deploy step, so migrations run in the build); start `node dist/index.js`; health check `/health`; Node from `engines` (`>=22.13 <25`, i.e. Node 24). Without the Blueprint, create a Web Service with exactly these settings. Check: `https://<service>.onrender.com/health` → `{"status":"ok","db":"ok",…}`.
+   What `render.yaml` sets up: free plan, Singapore, root `backend`; build `npm ci --include=dev && npm run build && npx prisma migrate deploy` (the free plan has no pre-deploy step, so migrations run in the build); start `node dist/index.js`; health check `/health`; Node from `engines` (`>=22.13 <25`, i.e. Node 24). Without the Blueprint, create a Web Service with exactly these settings. Check: `https://<service>.onrender.com/health` → `{"status":"ok","db":"ok","mqtt":"connected",…}`.
 3. **Vercel** (<https://vercel.com>): **Add New → Project** → import the repo → **Root Directory** `mobile`, Framework Preset *Other* (build command and output directory come from `mobile/vercel.json`: `npx expo export --platform web` → `dist`, every path rewritten to the single page). Add the environment variable `EXPO_PUBLIC_API_URL` = `https://<service>.onrender.com` → Deploy. Changing the variable later needs a redeploy.
 4. **CORS:** in Render, set `CORS_ORIGIN` to the Vercel production URL (e.g. `https://etanim.vercel.app`, no trailing slash). Preview deployments have other URLs: add them comma-separated if you use them.
 5. **APK (EAS Build)**, in `mobile/`:
@@ -116,14 +124,14 @@ Order: database → backend → web app → APK → firmware.
    npx eas-cli build -p android --profile preview
    ```
    The build fails early if the URL is missing, the placeholder, or not HTTPS. When it's done, open the link on the phone and install the APK. Closed-app push also needs `google-services.json` and the FCM key ([docs/setup-push.md](docs/setup-push.md)); without them the APK works, just without push.
-6. **Firmware:** `secrets.h` with your Wi-Fi, `SERVER_URL` = the Render URL and `DEVICE_KEY` = Render's `DEVICE_API_KEY`, then upload ([docs/firmware.md](docs/firmware.md)).
+6. **Firmware:** `secrets.h` with your Wi-Fi, `MQTT_HOST` = the EMQX address + the **device's** EMQX login, `SERVER_URL` = the Render URL and `DEVICE_KEY` = Render's `DEVICE_API_KEY`; install **PubSubClient 2.8**; upload ([docs/firmware.md](docs/firmware.md)).
 7. **SMS:** dry run first, then real SMS: [docs/setup-sms.md](docs/setup-sms.md).
 
 ## Pre-demo checklist
 
-1. **Hotspot / Wi-Fi on** (2.4 GHz) and the ESP32 powered. The LED should be steady.
-2. **Wake the backend ~2 min before:** open `https://<service>.onrender.com/health` and wait for `"db":"ok"` (the first request after 15 idle minutes takes about a minute; a powered ESP32 keeps it awake).
-3. **ESP32 posting:** the app's Home shows "Updated … ago" under 30 s and no "Stale data" badge; Render → Logs show no `401`. Serial console `status` shows `posts ok` rising.
+1. **Hotspot / Wi-Fi on** (2.4 GHz) and the ESP32 powered. The LED should be **steady** (MQTT); on with a short blink-off every 2 s means it's on the HTTPS fallback (port 8883 blocked? a phone hotspot usually allows it).
+2. **Wake the backend ~2 min before:** open `https://<service>.onrender.com/health` and wait for `"db":"ok"` and `"mqtt":"connected"` (the first request after 15 idle minutes takes about a minute; a powered ESP32 keeps it awake with its `/health` ping every 10 min).
+3. **ESP32 on MQTT:** the app's Home shows "Updated … ago" under 30 s and no "Stale data" badge; Settings → Device shows **Data link · MQTT (EMQX broker)**. Serial console `status` shows `mqtt: … connected; sent` rising. EMQX's deployment is **Running**.
 4. **SMS:** the textbee phone is on, charging, online and has load; `SMS_DRY_RUN=false`; `npm run sms:check` passes (locally, same values). Then send one real test SMS and check it arrives:
    ```powershell
    curl.exe -X POST -H "X-Admin-Key: <ADMIN_API_KEY>" https://<service>.onrender.com/api/alerts/test
@@ -133,10 +141,11 @@ Order: database → backend → web app → APK → firmware.
 
 ## Limits and risks of the free setup
 
-- **Render free:** sleeps after 15 min without traffic, ~1 min to wake. 750 free instance hours per workspace per month: one service running all month uses ~744 h, so a second free service in the same workspace can get both suspended. The filesystem is ephemeral (all data is in Neon).
+- **Render free:** sleeps after 15 min without HTTP traffic (incoming MQTT doesn't count), ~1 min to wake. The ESP32's `GET /health` every 10 min keeps it awake while the greenhouse runs; while it sleeps, MQTT readings reach the broker but aren't stored. 750 free instance hours per workspace per month: one service running all month uses ~744 h, so a second free service in the same workspace can get both suspended. The filesystem is ephemeral (all data is in Neon).
 - **Neon free:** the compute suspends when idle (first query ~1 s slower); monthly compute and storage limits apply. Check them in the Neon console.
 - **Open endpoints:** reading data, changing limits, calibrating and marking alerts read need no login (single-user class project). Anyone with the URL can do that. Only posting readings (`X-Device-Key`) and the test SMS (`X-Admin-Key`) need a key.
-- **Firmware TLS** doesn't verify the server certificate (`setInsecure()`); `uplink.cpp` shows how to pin the root CA.
+- **EMQX Serverless free:** 1 M session minutes and 1 GB traffic a month (this project uses ~10 %). Over quota, or 30 days without clients, the deployment **stops** until you start it in the console; readings then go over HTTPS.
+- **Firmware TLS:** MQTT verifies EMQX's certificate (`mqtt_ca.h`); HTTPS doesn't verify the server certificate (`setInsecure()`); `uplink.cpp` says how to pin the root CA. The device publishes with QoS 0 (PubSubClient), so a reading lost in a broken connection isn't re-sent.
 - **SMS (textbee):** the sending phone is a single point of failure: if it is off, offline, asleep or out of load, the SMS waits or fails. "sent" means queued on that phone, not received. The free plan allows 50 SMS a day and 300 a month (received SMS count too). A timeout is retried once, so in rare cases an SMS can arrive twice.
 
 ## App UI notes

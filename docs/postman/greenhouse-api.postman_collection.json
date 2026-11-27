@@ -18,7 +18,8 @@
                 "exec": [
                   "pm.test('Status is 200', function () { pm.response.to.have.status(200); });",
                   "const json = pm.response.json();",
-                  "pm.test('database is ok', function () { pm.expect(json.db).to.eql('ok'); });"
+                  "pm.test('database is ok', function () { pm.expect(json.db).to.eql('ok'); });",
+                  "pm.test('MQTT broker connected (EMQX)', function () { pm.expect(json.mqtt).to.eql('connected'); });"
                 ]
               }
             }
@@ -35,7 +36,7 @@
                 "health"
               ]
             },
-            "description": "What Render polls: always 200 while the process runs; db = ok | error. The first call after 15 idle minutes takes about a minute (cold start)."
+            "description": "What Render polls, and the ESP32 pings every 10 min (keeps the free service awake): always 200 while the process runs; db = ok | error; mqtt = connected | disconnected | off (the backend's EMQX connection). The first call after 15 idle minutes takes about a minute (cold start)."
           }
         },
         {

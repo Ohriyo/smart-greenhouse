@@ -16,7 +16,8 @@ services:
     # --include=dev: TypeScript and the Prisma CLI are dev dependencies.
     buildCommand: npm ci --include=dev && npm run build && npx prisma migrate deploy
     startCommand: node dist/index.js
-    # Always 200 while the process runs; "db" reports the database.
+    # Always 200 while the process runs; "db" and "mqtt" report the database and broker.
+    # The ESP32 also GETs it every 10 min so the free service never sleeps.
     healthCheckPath: /health
     envVars:
       # Render sets NODE_ENV=production and PORT itself at runtime.
@@ -29,6 +30,12 @@ services:
       - key: ADMIN_API_KEY # for POST /api/alerts/test (X-Admin-Key)
         generateValue: true
       - key: CORS_ORIGIN # the Vercel URL of the web app, e.g. https://etanim.vercel.app
+        sync: false
+      - key: MQTT_URL # EMQX: mqtts://<deployment address>:8883 (docs/setup-emqx.md)
+        sync: false
+      - key: MQTT_USERNAME # the backend's EMQX login (not the device's)
+        sync: false
+      - key: MQTT_PASSWORD # secret
         sync: false
       - key: ALERT_PHONE_NUMBERS # e.g. 09171234567,09181234567 (empty = no SMS)
         sync: false

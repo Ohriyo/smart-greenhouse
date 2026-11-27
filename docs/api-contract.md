@@ -2,7 +2,7 @@
 
 **Single source of truth** for every payload between the ESP32, the backend and the app. Update it whenever the API changes. The mobile Zod schemas mirror this file.
 
-- Contract version: **deploy-2** (2026-11-27): SMS through **textbee** (an Android phone's SIM) by default, Semaphore still selectable (`SMS_PROVIDER`, §7); `GET /api/sms/status` → `provider` is `"textbee"` or `"semaphore"`. deploy-1 (2026-11-26): the ESP32 posts readings over HTTPS (§4; MQTT removed), PostgreSQL, CORS, SMS alerts configured in the server environment (§7). Earlier: phase 11 (monitoring only), phase 10 (firmware, soil calibration), phase 8 (push, §6).
+- Contract version: **deploy-3** (2026-11-27): **MQTT is back** as the ESP32's main transport, through a hosted broker (EMQX, TLS): telemetry, retained status with Last Will, commands (§4); `POST /api/readings` stays as its automatic fallback. New fields: Device `transport`, `/health` and `/api/health` `mqtt`, soil-calibration `delivery`. deploy-2 (2026-11-27): SMS through **textbee** (an Android phone's SIM) by default, Semaphore still selectable (`SMS_PROVIDER`, §7); `GET /api/sms/status` → `provider` is `"textbee"` or `"semaphore"`. deploy-1 (2026-11-26): the ESP32 posts readings over HTTPS (§4; MQTT removed), PostgreSQL, CORS, SMS alerts configured in the server environment (§7). Earlier: phase 11 (monitoring only), phase 10 (firmware, soil calibration), phase 8 (push, §6).
 - Base URL: production `https://<your-service>.onrender.com`; local `http://localhost:4000` (`PORT` in `backend/.env`). The app reads it from `EXPO_PUBLIC_API_URL` only.
 - All timestamps in REST and Socket.IO are **ISO-8601 UTC strings** (`"2026-11-09T10:15:00.000Z"`).
 - Units: `airTemp` °C · `humidity` %RH · `soilMoisture` % (0 = dry calibration, 100 = wet) · `soilRaw` sensor output in mV (0–4095 accepted) · `lux` lx · `rssi` dBm.
@@ -13,10 +13,12 @@
 
 | Header | Env variable | Needed for |
 |---|---|---|
-| `X-Device-Key` | `DEVICE_API_KEY` | `POST /api/readings` (the ESP32 / simulator) |
+| `X-Device-Key` | `DEVICE_API_KEY` | `POST /api/readings` (the ESP32's HTTPS fallback / the simulator) |
 | `X-Admin-Key` | `ADMIN_API_KEY` | `POST /api/alerts/test` (one real test SMS) |
 
 A missing or wrong key → `401 UNAUTHORIZED`. A route whose key isn't configured on the server → `503 NOT_CONFIGURED`.
+
+**MQTT** (§4) is protected by the broker, not by these headers: the ESP32 and the backend each log in to EMQX with their own username and password (backend: `MQTT_USERNAME` / `MQTT_PASSWORD`; ESP32: `secrets.h`), over TLS.
 
 **CORS** (browsers only, i.e. the web build): the origins in `CORS_ORIGIN` (comma-separated, e.g. `https://etanim.vercel.app`) and any `http://localhost:<port>` get `Access-Control-Allow-Origin`; methods GET, POST, PUT, PATCH, DELETE; headers `Content-Type`, `X-Device-Key`, `X-Admin-Key`. Requests without an `Origin` header (the ESP32, the Android app, curl) are unaffected. Socket.IO applies the same rule.
 
@@ -38,7 +40,8 @@ A missing or wrong key → `401 UNAUTHORIZED`. A route whose key isn't configure
   "uptimeSec": 3605,
   "uptimeAt": "2026-11-09T10:15:00.000Z",
   "soilDryMv": 2600,
-  "soilWetMv": 1200
+  "soilWetMv": 1200,
+  "transport": "mqtt"
 }
 ```
 
@@ -53,6 +56,7 @@ A missing or wrong key → `401 UNAUTHORIZED`. A route whose key isn't configure
 | rssi | number \| null | Latest Wi-Fi signal (dBm); null if not reported |
 | uptimeSec / uptimeAt | number \| null / string \| null | Device uptime (s) as reported at `uptimeAt`. Current uptime ≈ `uptimeSec + (now − uptimeAt)` while online; a smaller value than before means it rebooted |
 | soilDryMv / soilWetMv | number \| null | Soil calibration the device reports using; null if never reported. A change emits `device:status` (acknowledges `calibrateSoil`) |
+| transport | `"mqtt"` \| `"https"` \| null | How its latest reading arrived: through the MQTT broker, or `POST /api/readings` (the ESP32's fallback). null before the first reading. A change emits `device:status` |
 
 ### Reading
 
@@ -167,27 +171,27 @@ Request bodies are JSON (`Content-Type: application/json`, max 16 kB). Unknown b
 
 ### GET /health
 
-Render's health check. **Always 200** while the process runs (a database outage must not make Render restart the service in a loop); `db` reports the database (checked with a 3 s limit).
+Render's health check, and the ESP32's **keep-awake ping** (every 10 min while it is on MQTT: Render's free plan sleeps after 15 min without HTTP traffic, and MQTT traffic doesn't count). **Always 200** while the process runs (a database outage must not make Render restart the service in a loop); `db` reports the database (checked with a 3 s limit), `mqtt` the backend's broker connection.
 
 ```json
-{ "status": "ok", "db": "ok", "time": "2026-11-26T10:15:00.000Z", "uptimeSec": 342 }
+{ "status": "ok", "db": "ok", "mqtt": "connected", "time": "2026-11-26T10:15:00.000Z", "uptimeSec": 342 }
 ```
 
-`status` is `"ok"` or `"degraded"`, `db` is `"ok"` or `"error"`.
+`status` is `"ok"` or `"degraded"` (database only), `db` is `"ok"` or `"error"`, `mqtt` is `"connected"`, `"disconnected"` (reconnecting; HTTPS readings still work) or `"off"` (`MQTT_URL` not set).
 
 ### GET /api/health
 
 The app's connection check: **200** when the database works, **503** when it doesn't.
 
 ```json
-{ "status": "ok", "db": "ok", "uptimeSec": 342, "devTools": false, "time": "2026-11-26T10:15:00.000Z" }
+{ "status": "ok", "db": "ok", "mqtt": "connected", "uptimeSec": 342, "devTools": false, "time": "2026-11-26T10:15:00.000Z" }
 ```
 
 `devTools` is `true` only with `DEV_TOOLS=true` (the app shows its dev-only Demo sheet then; see "Dev-only endpoints").
 
 ### POST /api/readings
 
-**The ESP32 (and the simulator) send every reading here.** Header `X-Device-Key: <DEVICE_API_KEY>`.
+**The ESP32's fallback**: it posts here whenever it can't reach the MQTT broker (§4); the simulator posts here when MQTT isn't configured. Header `X-Device-Key: <DEVICE_API_KEY>`. The same JSON body is what the device publishes on `greenhouse/{deviceId}/telemetry`.
 
 ```json
 {
@@ -439,15 +443,15 @@ The thresholds are only used by the backend's alert rules; nothing is sent to th
 
 ### POST /api/devices/:id/soil-calibration
 
-Body `{ "point": "dry" }` or `{ "point": "wet" }`. Queues `calibrateSoil` (§4): the device saves its **current** soil reading as 0 % (dry: sensor in air) or 100 % (wet: sensor in water).
+Body `{ "point": "dry" }` or `{ "point": "wet" }`. Sends `calibrateSoil` (§4): the device saves its **current** soil reading as 0 % (dry: sensor in air) or 100 % (wet: sensor in water).
 
 202:
 
 ```json
-{ "commandId": "a41f…", "deviceId": "gh-01", "point": "dry", "status": "queued" }
+{ "commandId": "a41f…", "deviceId": "gh-01", "point": "dry", "status": "queued", "delivery": "mqtt" }
 ```
 
-The command goes out in the response to the device's next reading (≤ one interval, 30 s), and the device then posts a reading with the new `soilDryMv`/`soilWetMv` right away; that is the confirmation (`device:status`). Errors: 400 `VALIDATION_ERROR`, 404 `NOT_FOUND`, 409 `DEVICE_OFFLINE`. Also available on the serial console (`cal dry` / `cal wet`, docs/firmware.md).
+`delivery` is `"mqtt"` (published on the device's command topic now: it arrives within a second) or `"queued"` (the device is on its HTTPS fallback, or the broker is down: it goes out with its next reading, ≤ 30 s). `status` stays `"queued"`: the command is not applied yet. The device then sends a reading with the new `soilDryMv`/`soilWetMv` right away; that is the confirmation (`device:status`). Errors: 400 `VALIDATION_ERROR`, 404 `NOT_FOUND`, 409 `DEVICE_OFFLINE`. Also available on the serial console (`cal dry` / `cal wet`, docs/firmware.md).
 
 ### GET /api/alerts
 
@@ -624,7 +628,7 @@ Connect to the same base URL, default path `/socket.io`, socket.io-client **v4**
 | Event | Payload | When |
 |---|---|---|
 | `telemetry` | `Reading` | Every stored reading |
-| `device:status` | `Device` | A device goes online or offline, is auto-created, is renamed, or reports a different soil calibration (acknowledgement). RSSI/uptime updates alone don't emit it |
+| `device:status` | `Device` | A device goes online or offline, is auto-created, is renamed, switches transport (MQTT ↔ HTTPS), or reports a different soil calibration (acknowledgement). RSSI/uptime updates alone don't emit it |
 | `alert` | `Alert` | Every new alert (§5), with `sms: null` |
 
 Payloads are the same JSON shapes as in REST (§1). Marking alerts read does not emit an event.
@@ -638,15 +642,42 @@ After a (re)connect, the app should refetch `GET /api/devices`, `/latest` and th
 
 ---
 
-## 4. Device ↔ backend (HTTPS)
+## 4. Device ↔ backend (MQTT, HTTPS fallback)
 
-The ESP32 sends a reading to `POST /api/readings` (§2) every **30 s** (`intervalSec: 30`) over HTTPS, with `X-Device-Key`. The app never talks to the ESP32.
+The ESP32 sends one reading every **30 s** (`intervalSec: 30`). The app never talks to the ESP32 or the broker: only to the backend (REST + Socket.IO).
+
+```
+ESP32 ──MQTT/TLS 8883──► EMQX (broker) ──MQTT/TLS──► backend   (main path)
+ESP32 ──HTTPS POST /api/readings──────────────────► backend   (fallback while MQTT is down)
+ESP32 ──HTTPS GET /health every 10 min───────────► backend   (keeps Render's free plan awake)
+```
+
+### MQTT topics
+
+Broker: EMQX Serverless (TLS only: `mqtts://<deployment>:8883`; no anonymous access). MQTT 3.1.1. `{deviceId}` = `gh-01` by default.
+
+| Topic | Direction | Payload | QoS / retain |
+|---|---|---|---|
+| `greenhouse/{deviceId}/telemetry` | device → backend | A reading: the JSON body of `POST /api/readings` (§2). Its `deviceId`, if present, must equal the topic's | device publishes QoS 0 (PubSubClient); the backend subscribes with QoS 1. Not retained |
+| `greenhouse/{deviceId}/status` | device → backend | `online` (published on connect) or `offline` (the **Last Will**: the broker publishes it when the device's connection dies without a goodbye) | QoS 1, **retained** |
+| `greenhouse/{deviceId}/command` | backend → device | One command object (below) | QoS 1, **not** retained (an offline device must not get an old command later) |
+
+The backend subscribes to `greenhouse/+/telemetry` and `greenhouse/+/status`. Telemetry goes through exactly the same validation, storage, alert rules, SMS, push and Socket.IO pipeline as `POST /api/readings`; invalid telemetry (bad JSON, out of range, another device's id, > 16 kB) is logged and dropped (there is no reply channel). The backend's broker connection reconnects forever with backoff (1 s … 30 s); while it is down, the ESP32's HTTPS fallback keeps readings flowing.
+
+**Recommended EMQX authorization** (docs/setup-emqx.md): the device login may publish only `greenhouse/gh-01/telemetry` and `greenhouse/gh-01/status` and subscribe only `greenhouse/gh-01/command`; the backend login may subscribe `greenhouse/+/telemetry`, `greenhouse/+/status` and publish `greenhouse/+/command`.
+
+### HTTPS fallback and keep-awake
+
+- When the ESP32 isn't connected to the broker (blocked port 8883, EMQX down, wrong login) it sends the same reading to `POST /api/readings` instead, and retries MQTT with backoff (10 s … 2 min). A failed MQTT publish is re-sent over HTTPS at once. Never both: one reading = one transport.
+- While on MQTT it sends `GET /health` every **10 min** (Render's free plan sleeps after 15 min without HTTP requests; outgoing MQTT doesn't count). A failed ping is retried after 1 min (a cold start takes ~1 min).
+- `Device.transport` records which path the latest reading used.
 
 ### Commands (backend → device)
 
-The device can't be called directly, so commands wait on the backend (in memory, up to **120 s**) and go out **once** in the `commands` array of the response to the device's next reading. A newer command of the same type replaces a pending one. A backend restart drops pending commands.
+- **Device on MQTT** (its latest reading came over MQTT and no Last Will since): the command is published on its command topic at once.
+- **Otherwise** (HTTPS fallback, broker down, a failed publish): it waits on the backend (in memory, up to **120 s**) and goes out **once**: in the `commands` array of the response to the device's next `POST /api/readings`, or, if its next reading arrives over MQTT, published right after it. A newer command of the same type replaces a pending one. A backend restart drops pending commands.
 
-**calibrateSoil**: the device stores its **current** averaged soil reading (mV) in NVS, as the dry point (`"dry"`, sensor in air = 0 %) or the wet point (`"wet"`, sensor in water = 100 %), then posts a reading right away with the new `soilDryMv`/`soilWetMv` (the confirmation). If the current reading is invalid, it ignores the command and logs why.
+**calibrateSoil**: the device stores its **current** averaged soil reading (mV) in NVS, as the dry point (`"dry"`, sensor in air = 0 %) or the wet point (`"wet"`, sensor in water = 100 %), then sends a reading right away with the new `soilDryMv`/`soilWetMv` (the confirmation). If the current reading is invalid, it ignores the command and logs why.
 
 ```json
 { "id": "a41f…", "type": "calibrateSoil", "point": "dry", "issuedAt": "2026-11-26T10:14:40.000Z" }
@@ -659,7 +690,11 @@ The device can't be called directly, so commands wait on the backend (in memory,
 
 ### Online / offline
 
-A device is **online** from its first reading. It becomes **offline** when no reading arrives for **3 intervals + 2 s** (`3 × intervalSec + 2`, 92 s at 30 s; `OFFLINE_AFTER_SEC`, default 90 s, if it never sent `intervalSec`). The backend checks every 2 s. Silence is counted only since the backend started: after a restart (e.g. a Render cold start), devices get a full window before being marked offline.
+A device is **online** from its first reading (either transport). It becomes **offline** when:
+- no reading arrives for **3 intervals + 2 s** (`3 × intervalSec + 2`, 92 s at 30 s; `OFFLINE_AFTER_SEC`, default 90 s, if it never sent `intervalSec`). The backend checks every 2 s. Silence is counted only since the backend started: after a restart (e.g. a Render cold start), devices get a full window before being marked offline; or
+- its **Last Will** (`offline` on its status topic, live) arrives and no reading follows within **one interval + 10 s** (40 s at 30 s). The grace lets the ESP32 switch to HTTPS without an offline/online pair. The broker sends the Last Will about 1.5 × the keep-alive (20 s) after the connection silently dies, or at once when the socket closes.
+
+**Retained** status messages (replayed by the broker on every subscribe, possibly days old) never change presence and never create a device. A live `online` only cancels a pending Last Will.
 
 Each online→offline transition emits `device:status` and creates **one** `offline` alert; each offline→online transition emits `device:status` and creates one `online` info alert. `offline`/`online` alerts are only created for devices that have sent readings before.
 
@@ -673,7 +708,7 @@ Raw readings older than `READINGS_RETENTION_DAYS` (default **30**, matching the 
 
 ### Dev simulator
 
-`npm run sim` (in `backend/`) acts as device `gh-01`: it posts readings with `X-Device-Key` exactly like the firmware and applies the returned commands. `npm run sim -- --help` lists the options (`--url` targets a deployed backend).
+`npm run sim` (in `backend/`) acts as device `gh-01` like the firmware: with `MQTT_URL` set (backend/.env or `--mqtt-url`) it publishes telemetry, retained `online` status with the Last Will `offline`, obeys the command topic, falls back to HTTPS while the broker is unreachable and pings `/health` every 10 min; without it, it posts with `X-Device-Key`. Ctrl+C drops the connection without a goodbye, so the broker sends the Last Will. `npm run sim -- --help` lists the options (`--transport http`, `--url` targets a deployed backend).
 
 ---
 

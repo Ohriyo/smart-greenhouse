@@ -79,6 +79,14 @@ function DeviceDetails({ deviceId }: { deviceId: string }) {
           : toneColors(theme, 'danger').fg;
 
   const name = device?.name ?? deviceId;
+  // Only meaningful while readings keep arriving.
+  const link = !live
+    ? null
+    : device?.transport === 'mqtt'
+      ? 'MQTT (EMQX broker)'
+      : device?.transport === 'https'
+        ? 'HTTPS (MQTT fallback)'
+        : null;
 
   return (
     <Card>
@@ -111,6 +119,12 @@ function DeviceDetails({ deviceId }: { deviceId: string }) {
           spoken={uptimeSec === null ? 'unknown' : formatUptime(uptimeSec)}
         />
       </View>
+
+      {link ? (
+        <Text variant="caption" color="secondary" style={styles.link}>
+          Data link · {link}
+        </Text>
+      ) : null}
 
       <Divider style={styles.divider} />
       <ListRow
@@ -244,5 +258,6 @@ const styles = StyleSheet.create({
   stats: { flexDirection: 'row', gap: 8 },
   stat: { flex: 1, gap: 4 },
   statValue: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  link: { marginTop: 12 },
   sheetActions: { gap: 10, marginTop: 8 },
 });

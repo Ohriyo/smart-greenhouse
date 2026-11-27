@@ -49,6 +49,8 @@ export const DeviceSchema = z.object({
   uptimeAt: isoDate.nullish(),
   soilDryMv: z.number().int().nullish(),
   soilWetMv: z.number().int().nullish(),
+  /** How the latest reading arrived: MQTT (through EMQX) or the HTTPS fallback. */
+  transport: z.enum(['mqtt', 'https']).nullish(),
 });
 export type Device = z.infer<typeof DeviceSchema>;
 
@@ -146,6 +148,8 @@ export type ApiErrorBody = z.infer<typeof ApiErrorBodySchema>;
 export const HealthSchema = z.object({
   status: z.enum(['ok', 'degraded']),
   db: z.enum(['ok', 'error']),
+  /** The backend's MQTT broker connection ("off" = MQTT not configured). nullish = older backend. */
+  mqtt: z.enum(['connected', 'disconnected', 'off']).nullish(),
   uptimeSec: z.number(),
   devTools: z.boolean(),
   time: isoDate,
@@ -274,8 +278,9 @@ export const DeviceRenameSchema = z.object({
 export type DeviceRename = z.infer<typeof DeviceRenameSchema>;
 
 /**
- * POST /api/devices/:id/soil-calibration (202: queued, delivered with the device's
- * next reading, acknowledged by the new soilDryMv/soilWetMv it reports).
+ * POST /api/devices/:id/soil-calibration (202: published over MQTT at once, or queued
+ * for the device's next HTTPS reading; acknowledged by the new soilDryMv/soilWetMv
+ * it reports).
  */
 export const SoilPointSchema = z.enum(['dry', 'wet']);
 export type SoilPoint = z.infer<typeof SoilPointSchema>;
@@ -285,6 +290,8 @@ export const SoilCalibrationResponseSchema = z.object({
   deviceId: z.string(),
   point: SoilPointSchema,
   status: z.literal('queued'),
+  /** "mqtt" = sent to the device now; "queued" = with its next HTTPS reading. */
+  delivery: z.enum(['mqtt', 'queued']).nullish(),
 });
 export type SoilCalibrationResponse = z.infer<typeof SoilCalibrationResponseSchema>;
 

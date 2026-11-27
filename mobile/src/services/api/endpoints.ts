@@ -112,8 +112,8 @@ export const api = {
 
   /**
    * The greenhouse stores its *current* soil reading as the dry (sensor in air) or
-   * wet (sensor in water) point. 202 = queued: it goes out with the device's next
-   * reading (≤ 30 s); the new soilDryMv/soilWetMv it then reports confirm it.
+   * wet (sensor in water) point. 202: sent at once over MQTT, or with the device's next
+   * HTTPS reading (≤ 30 s); the new soilDryMv/soilWetMv it then reports confirm it.
    */
   calibrateSoil: (deviceId: string, point: SoilPoint): Promise<SoilCalibrationResponse> =>
     apiRequest(

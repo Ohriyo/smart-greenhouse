@@ -17,7 +17,8 @@ function sendErrorMessage(err: unknown): string {
 
 /**
  * How long we wait for the greenhouse to report its new calibration: the command
- * goes out with its next reading (≤ 30 s), it answers with a reading right away,
+ * arrives at once over MQTT or with its next HTTPS reading (≤ 30 s), it answers with
+ * a reading right away,
  * and without the socket the app sees that with its next 10 s poll.
  */
 export const CALIBRATION_CONFIRM_TIMEOUT_MS = 75_000;

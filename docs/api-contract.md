@@ -2,7 +2,7 @@
 
 **Single source of truth** for every payload between the ESP32, the backend and the app. Update it whenever the API changes. The mobile Zod schemas mirror this file.
 
-- Contract version: **deploy-1** (2026-11-26): the ESP32 posts readings over HTTPS (§4; MQTT removed), PostgreSQL, CORS, SMS alerts configured in the server environment (§7). Earlier: phase 11 (monitoring only), phase 10 (firmware, soil calibration), phase 8 (push, §6).
+- Contract version: **deploy-2** (2026-11-27): SMS through **textbee** (an Android phone's SIM) by default, Semaphore still selectable (`SMS_PROVIDER`, §7); `GET /api/sms/status` → `provider` is `"textbee"` or `"semaphore"`. deploy-1 (2026-11-26): the ESP32 posts readings over HTTPS (§4; MQTT removed), PostgreSQL, CORS, SMS alerts configured in the server environment (§7). Earlier: phase 11 (monitoring only), phase 10 (firmware, soil calibration), phase 8 (push, §6).
 - Base URL: production `https://<your-service>.onrender.com`; local `http://localhost:4000` (`PORT` in `backend/.env`). The app reads it from `EXPO_PUBLIC_API_URL` only.
 - All timestamps in REST and Socket.IO are **ISO-8601 UTC strings** (`"2026-11-09T10:15:00.000Z"`).
 - Units: `airTemp` °C · `humidity` %RH · `soilMoisture` % (0 = dry calibration, 100 = wet) · `soilRaw` sensor output in mV (0–4095 accepted) · `lux` lx · `rssi` dBm.
@@ -496,7 +496,7 @@ Newest first, paginated with a cursor. Each item carries its SMS status (`sms`, 
 }
 ```
 
-`status` is `"sent"`, `"failed"` (see `providerResponse`) or `"dry_run"` (with `SMS_DRY_RUN=true` nothing is sent). "sent" means Semaphore accepted it; delivery to the phone is not confirmed. Errors: 401 `UNAUTHORIZED`, 503 `NOT_CONFIGURED` (no `ADMIN_API_KEY`), 409 `SMS_NOT_CONFIGURED` (no numbers), 429 `RATE_LIMITED` (5 per hour). Example:
+`status` is `"sent"`, `"failed"` (see `providerResponse`) or `"dry_run"` (with `SMS_DRY_RUN=true` nothing is sent). "sent" means the provider accepted it (textbee: queued on the sending phone; Semaphore: accepted); delivery to the recipient is not confirmed. Errors: 401 `UNAUTHORIZED`, 503 `NOT_CONFIGURED` (no `ADMIN_API_KEY`), 409 `SMS_NOT_CONFIGURED` (no numbers), 429 `RATE_LIMITED` (5 per hour). Example:
 
 ```powershell
 curl.exe -X POST -H "X-Admin-Key: <ADMIN_API_KEY>" https://<your-service>.onrender.com/api/alerts/test
@@ -516,11 +516,11 @@ Optional body `{ "deviceId": "gh-01" }` limits it to one device; with no body, a
 
 ### GET /api/sms/status
 
-Read-only SMS setup (configured in the server environment, §7) and the 10 newest attempts. Numbers are always masked.
+Read-only SMS setup (configured in the server environment, §7) and the 10 newest attempts. Numbers are always masked. `provider` is `SMS_PROVIDER`: `"textbee"` or `"semaphore"` (also shown in a dry run).
 
 ```json
 {
-  "provider": "semaphore",
+  "provider": "textbee",
   "dryRun": false,
   "recipients": ["091••••4567", "091••••4321"],
   "cooldownMinutes": 30,
@@ -742,7 +742,11 @@ Push message (Expo format):
 
 ## 7. SMS alerts
 
-The **backend** texts the numbers in `ALERT_PHONE_NUMBERS` through **Semaphore** (semaphore.co). The Semaphore API key lives only in the server environment: it is never sent to the app, never returned by the API and never logged.
+The **backend** texts the numbers in `ALERT_PHONE_NUMBERS` through the provider in `SMS_PROVIDER`:
+- **`textbee`** (default, textbee.dev): an Android phone running the textbee app sends the SMS from its own SIM. The sender is that phone's number. The phone must be on, online and have load; while it is asleep or offline the SMS waits on textbee's side.
+- **`semaphore`** (semaphore.co): a Philippine SMS service, paid per SMS, sending from a registered sender name.
+
+API keys live only in the server environment: never sent to the app, never returned by the API, never logged.
 
 **When** (after the reading is stored; never blocks or fails the reading request):
 
@@ -761,13 +765,15 @@ The **backend** texts the numbers in `ALERT_PHONE_NUMBERS` through **Semaphore**
 
 **Every attempt is stored** (table `SmsAlert`): `id`, `sensor`, `condition`, `value`, `threshold`, `message`, `recipients` (masked), `status` (`sent` · `failed` · `skipped_cooldown` · `skipped_daily_cap` · `dry_run`), `provider_response` (key removed, numbers masked), `created_at`, plus `kind`, `deviceId` and `alertId` (the in-app alert it belongs to; shown as `Alert.sms`).
 
-**Provider call.** One `POST https://api.semaphore.co/api/v4/messages` (form-encoded: `apikey`, `number` = all recipients comma-separated, `message`, optional `sendername`) per SMS. Timeout **10 s**; **one retry** after a network error, a timeout or an HTTP 5xx (a 4xx or a rejection is final). Semaphore's documented answer is one record per number with `status` Queued / Pending / Sent / Failed / Refunded; "sent" here means at least one number was accepted. Its error format is not documented, so any other answer counts as `failed` and is stored in `provider_response`. Retry caveat: if the first request timed out after Semaphore had accepted it, the SMS can arrive twice.
+**Provider call** (one request per SMS, all recipients in it). Both providers: timeout **10 s**; **one retry** after a network error, a timeout or an HTTP 5xx (a 4xx or a rejection is final). Retry caveat: if the first request timed out after the provider had accepted it, the SMS can arrive twice.
+- **textbee:** `POST https://api.textbee.dev/api/v1/gateway/send-sms`, header `x-api-key`, JSON `{ "recipients": ["+639…"], "message": "…", "deviceId"?: TEXTBEE_DEVICE_ID, "simSlotIndex"?: TEXTBEE_SIM_SLOT }`. The documented answer is `{ "data": { "success": true, "smsBatchId": "…", "recipientCount": n } }` (or `successCount` / `failureCount`); "sent" here means `success: true` (or `successCount > 0`): queued on the phone. Documented errors: 400 (email not verified, no enabled phone), 401 (key wrong or revoked), 403, 404 (unknown `deviceId`), 429 (plan limit used up); stored with a hint in `provider_response`. A textbee `warning` (e.g. `SMS_PERMISSION_MISSING`) is stored with the attempt.
+- **semaphore:** `POST https://api.semaphore.co/api/v4/messages` (form-encoded: `apikey`, `number` = all recipients comma-separated, `message`, optional `sendername`). The documented answer is one record per number with `status` Queued / Pending / Sent / Failed / Refunded; "sent" here means at least one number was accepted. Its error format is not documented, so any other answer counts as `failed`.
 
-**Numbers.** Philippine mobiles, normalized to `09XXXXXXXXX` (the form in Semaphore's request examples). Accepted in `ALERT_PHONE_NUMBERS`: `09…`, `9…`, `639…`, `+639…`, with spaces/dashes. An invalid entry stops the backend at startup (its position is printed, never the number).
+**Numbers.** Philippine mobiles, normalized to `09XXXXXXXXX` (the form in Semaphore's request examples) and sent to textbee as E.164 `+639XXXXXXXXX` (textbee's recommended format). Accepted in `ALERT_PHONE_NUMBERS`: `09…`, `9…`, `639…`, `+639…`, with spaces/dashes. An invalid entry stops the backend at startup (its position is printed, never the number).
 
-**Texts.** Plain ASCII, ≤ 160 characters (one SMS, one credit): the degree sign would force a 70-character mode, so temperatures read `36C`. Never starting with "TEST" (Semaphore silently drops those). Times are Asia/Manila.
+**Texts.** Plain ASCII, ≤ 160 characters (one SMS, one credit): the degree sign would force a 70-character mode, so temperatures read `36C`. Never starting with "TEST" (Semaphore silently drops those). With textbee the sending SIM's own rates apply. Times are Asia/Manila.
 
-**Dry run.** `SMS_DRY_RUN=true` (the default) records every attempt as `dry_run` and logs it; Semaphore is never called and no credit is used. Set `SMS_DRY_RUN=false` (plus `SEMAPHORE_API_KEY`) for real SMS.
+**Dry run.** `SMS_DRY_RUN=true` (the default) records every attempt as `dry_run` and logs it; the provider is never called. Set `SMS_DRY_RUN=false` (plus the provider's API key) for real SMS; without the key the backend refuses to start.
 
 **Backend env** (see `backend/.env.example` and docs/setup-sms.md):
 
@@ -775,7 +781,11 @@ The **backend** texts the numbers in `ALERT_PHONE_NUMBERS` through **Semaphore**
 |---|---|---|
 | `ALERT_PHONE_NUMBERS` | empty (no SMS) | Comma-separated PH mobile numbers |
 | `SMS_DRY_RUN` | `true` | `false` = real SMS |
-| `SEMAPHORE_API_KEY` | none | Secret; required when `SMS_DRY_RUN=false` |
+| `SMS_PROVIDER` | `textbee` | `textbee` or `semaphore` |
+| `TEXTBEE_API_KEY` | none | Secret; required when `SMS_PROVIDER=textbee` and `SMS_DRY_RUN=false` |
+| `TEXTBEE_DEVICE_ID` | textbee's default phone | The phone to send from (textbee app or dashboard) |
+| `TEXTBEE_SIM_SLOT` | the phone's default SIM | `0` = SIM 1, `1` = SIM 2 (0–7) |
+| `SEMAPHORE_API_KEY` | none | Secret; required when `SMS_PROVIDER=semaphore` and `SMS_DRY_RUN=false` |
 | `SEMAPHORE_SENDER_NAME` | account default | Registered sender name (max 11 characters) |
 | `ALERT_COOLDOWN_MINUTES` | `30` | Per sensor + condition (also the in-app alert cooldown) |
 | `SMS_DAILY_CAP` | `10` | Real alert SMS per rolling 24 h |

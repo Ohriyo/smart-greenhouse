@@ -48,10 +48,11 @@ const push = createPushSender({
   enabled: env.PUSH_ENABLED,
 });
 
-// SMS alerts to ALERT_PHONE_NUMBERS (Semaphore). Dry run records and logs only.
+// SMS alerts to ALERT_PHONE_NUMBERS (textbee or Semaphore). Dry run records and logs only.
 const sms = createSmsNotifier({
   store: createPrismaSmsStore(),
   provider: createSmsProvider(env),
+  providerName: env.SMS_PROVIDER,
   dryRun: env.SMS_DRY_RUN,
   recipients: env.ALERT_PHONE_NUMBERS,
   cooldownMs: env.ALERT_COOLDOWN_MINUTES * 60_000,
@@ -62,9 +63,12 @@ if (env.ALERT_PHONE_NUMBERS.length === 0) {
   log.warn('SMS alerts off: ALERT_PHONE_NUMBERS is empty');
 } else {
   log.info(
-    `SMS alerts to ${env.ALERT_PHONE_NUMBERS.length} number(s) via Semaphore` +
+    `SMS alerts to ${env.ALERT_PHONE_NUMBERS.length} number(s) via ${env.SMS_PROVIDER}` +
       (env.SMS_DRY_RUN ? ' — DRY RUN: recorded and logged, nothing is sent' : ' — LIVE'),
   );
+  if (!env.SMS_DRY_RUN && env.SMS_PROVIDER === 'textbee' && !env.TEXTBEE_DEVICE_ID) {
+    log.warn('TEXTBEE_DEVICE_ID is empty: textbee picks the phone (set it to be sure)');
+  }
 }
 
 // Dev-only Demo tools (DEV_TOOLS=true): scenarios for the simulator.

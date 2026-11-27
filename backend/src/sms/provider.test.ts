@@ -164,8 +164,16 @@ describe('Semaphore provider: answers, timeout and retry', () => {
 });
 
 describe('createSmsProvider', () => {
-  it('needs an API key', () => {
-    assert.equal(createSmsProvider({}), null);
-    assert.equal(createSmsProvider({ SEMAPHORE_API_KEY: KEY })?.name, 'semaphore');
+  it('builds the provider SMS_PROVIDER names, and needs its API key', () => {
+    assert.equal(createSmsProvider({ SMS_PROVIDER: 'semaphore' }), null);
+    assert.equal(
+      createSmsProvider({ SMS_PROVIDER: 'semaphore', SEMAPHORE_API_KEY: KEY })?.name,
+      'semaphore',
+    );
+    assert.equal(createSmsProvider({ SMS_PROVIDER: 'textbee', SEMAPHORE_API_KEY: KEY }), null);
+    assert.equal(
+      createSmsProvider({ SMS_PROVIDER: 'textbee', TEXTBEE_API_KEY: KEY })?.name,
+      'textbee',
+    );
   });
 });

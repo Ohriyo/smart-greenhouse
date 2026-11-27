@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { maskPhone, maskPhonesInText, normalizePhMobile, parsePhoneList } from './phone.js';
+import { maskPhone, maskPhonesInText, normalizePhMobile, parsePhoneList, toE164 } from './phone.js';
 
 describe('normalizePhMobile (Semaphore wants 09XXXXXXXXX)', () => {
   it('accepts the common ways of writing a PH mobile number', () => {
@@ -33,6 +33,13 @@ describe('normalizePhMobile (Semaphore wants 09XXXXXXXXX)', () => {
     ]) {
       assert.equal(normalizePhMobile(input), null, JSON.stringify(input));
     }
+  });
+});
+
+describe('toE164 (textbee wants +639XXXXXXXXX)', () => {
+  it('turns a normalized number into E.164', () => {
+    assert.equal(toE164('09171234567'), '+639171234567');
+    assert.equal(toE164(normalizePhMobile('+63 917-123-4567') ?? ''), '+639171234567');
   });
 });
 

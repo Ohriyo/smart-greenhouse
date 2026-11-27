@@ -81,6 +81,7 @@ function build(
   const sms = createSmsNotifier({
     store: fake.store,
     provider,
+    providerName: 'semaphore',
     dryRun: opts.dryRun ?? false,
     recipients: opts.recipients ?? NUMBERS,
     cooldownMs: 30 * MIN,

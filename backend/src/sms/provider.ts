@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { maskPhonesInText } from './phone.js';
+import { createTextbeeProvider } from './textbee.js';
 
 /** Result of one send (after the retry, if any). Never contains the API key. */
 export interface SmsSendResult {
@@ -11,9 +12,13 @@ export interface SmsSendResult {
   attempts: number;
 }
 
+/** SMS_PROVIDER: textbee (an Android phone's SIM) or Semaphore (a PH SMS service). */
+export const SMS_PROVIDERS = ['textbee', 'semaphore'] as const;
+export type SmsProviderName = (typeof SMS_PROVIDERS)[number];
+
 /** Something that can send one SMS to several numbers. Add a provider by implementing this. */
 export interface SmsProvider {
-  readonly name: 'semaphore';
+  readonly name: SmsProviderName;
   /** Never throws: failures come back as `ok: false`. */
   send(recipients: readonly string[], text: string): Promise<SmsSendResult>;
 }
@@ -170,10 +175,23 @@ export function createSemaphoreProvider(opts: SemaphoreOptions): SmsProvider {
   };
 }
 
+/** The configured provider, or null when its API key is missing (fine in a dry run). */
 export function createSmsProvider(config: {
+  SMS_PROVIDER: SmsProviderName;
   SEMAPHORE_API_KEY?: string | undefined;
   SEMAPHORE_SENDER_NAME?: string | undefined;
+  TEXTBEE_API_KEY?: string | undefined;
+  TEXTBEE_DEVICE_ID?: string | undefined;
+  TEXTBEE_SIM_SLOT?: number | undefined;
 }): SmsProvider | null {
+  if (config.SMS_PROVIDER === 'textbee') {
+    if (!config.TEXTBEE_API_KEY) return null;
+    return createTextbeeProvider({
+      apiKey: config.TEXTBEE_API_KEY,
+      deviceId: config.TEXTBEE_DEVICE_ID,
+      simSlot: config.TEXTBEE_SIM_SLOT,
+    });
+  }
   if (!config.SEMAPHORE_API_KEY) return null;
   return createSemaphoreProvider({
     apiKey: config.SEMAPHORE_API_KEY,

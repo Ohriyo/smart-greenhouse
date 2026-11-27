@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import { DeviceIdSchema } from '../domain/schemas.js';
 import { parsePhoneList } from '../sms/phone.js';
+import { SMS_PROVIDERS } from '../sms/provider.js';
 
 // backend/.env (local development). Variables that are already set (Render's
 // environment, the test runner) win: loadEnvFile never overrides them.
@@ -132,7 +133,25 @@ const EnvSchema = z.object({
   SMS_DRY_RUN: flag('true'),
   /** Who gets the SMS alerts. Empty = no SMS at all. */
   ALERT_PHONE_NUMBERS: PhoneListSchema,
-  /** Semaphore API key (secret). Required when SMS_DRY_RUN=false. Never commit it. */
+  /** Who sends the SMS: textbee (an Android phone's SIM, the default) or semaphore. */
+  SMS_PROVIDER: z.preprocess(blankToUndefined, z.enum(SMS_PROVIDERS).default('textbee')),
+  /** textbee API key (secret). Required when SMS_PROVIDER=textbee and SMS_DRY_RUN=false. */
+  TEXTBEE_API_KEY: optionalString(z.string().min(1)),
+  /** The phone's Device ID (textbee app or dashboard); empty = textbee's default phone. */
+  TEXTBEE_DEVICE_ID: optionalString(
+    z
+      .string()
+      .regex(
+        /^[A-Za-z0-9_-]{1,64}$/,
+        'must be the Device ID shown in the textbee app or dashboard',
+      ),
+  ),
+  /** SIM to send from on a dual-SIM phone: 0 = SIM 1, 1 = SIM 2; empty = the phone's default. */
+  TEXTBEE_SIM_SLOT: z.preprocess(
+    blankToUndefined,
+    z.coerce.number().int().min(0).max(7).optional(),
+  ),
+  /** Semaphore API key (secret). Required when SMS_PROVIDER=semaphore and SMS_DRY_RUN=false. */
   SEMAPHORE_API_KEY: optionalString(z.string().min(1)),
   /** Sender name registered with Semaphore; empty = your account's default. */
   SEMAPHORE_SENDER_NAME: optionalString(z.string().min(1).max(11)),
@@ -155,12 +174,15 @@ const EnvSchema = z.object({
 });
 
 const parsed = EnvSchema.superRefine((e, ctx) => {
-  if (!e.SMS_DRY_RUN && e.SEMAPHORE_API_KEY === undefined) {
-    ctx.addIssue({
-      code: 'custom',
-      path: ['SEMAPHORE_API_KEY'],
-      message: 'is required when SMS_DRY_RUN=false (real SMS)',
-    });
+  if (!e.SMS_DRY_RUN) {
+    const key = e.SMS_PROVIDER === 'textbee' ? 'TEXTBEE_API_KEY' : 'SEMAPHORE_API_KEY';
+    if (e[key] === undefined) {
+      ctx.addIssue({
+        code: 'custom',
+        path: [key],
+        message: `is required when SMS_DRY_RUN=false (real SMS) with SMS_PROVIDER=${e.SMS_PROVIDER}`,
+      });
+    }
   }
   if (e.NODE_ENV === 'production' && e.ADMIN_API_KEY === undefined) {
     ctx.addIssue({

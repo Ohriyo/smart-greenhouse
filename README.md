@@ -1,6 +1,6 @@
 # Smart Greenhouse (ETanim)
 
-An ESP32 reads air temperature and humidity (DHT22), light (BH1750) and soil moisture (capacitive v1.2) and posts a reading every 30 s over HTTPS. A Node.js backend stores the readings in PostgreSQL, raises alerts, and texts the owner through Semaphore when a value crosses its limit. The ETanim app (Android APK and a web version) shows live values, history, alerts and the limits.
+An ESP32 reads air temperature and humidity (DHT22), light (BH1750) and soil moisture (capacitive v1.2) and posts a reading every 30 s over HTTPS. A Node.js backend stores the readings in PostgreSQL, raises alerts, and texts the owner when a value crosses its limit (through textbee: an Android phone sends the SMS from its own SIM). The ETanim app (Android APK and a web version) shows live values, history, alerts and the limits.
 
 ```
                      HTTPS POST /api/readings every 30 s (X-Device-Key)
@@ -12,7 +12,7 @@ An ESP32 reads air temperature and humidity (DHT22), light (BH1750) and soil moi
                                                │ Prisma · rules engine    │               └──────────────┘
                                                └────┬───────────────┬─────┘
                                      SMS (HTTPS)    │               │  push (Android APK only)
-                                   Semaphore ◄──────┘               └──► Expo Push → FCM → phone
+          textbee → Android phone's SIM ◄───────────┘               └──► Expo Push → FCM → phone
 ```
 
 | Folder | What |
@@ -36,8 +36,11 @@ An ESP32 reads air temperature and humidity (DHT22), light (BH1750) and soil moi
 | `CORS_ORIGIN` | for the web app | | Browser origins allowed to call the API, comma-separated, e.g. `https://etanim.vercel.app` (localhost is always allowed) |
 | `ALERT_PHONE_NUMBERS` | for SMS | empty = no SMS | PH mobiles, comma-separated: `09171234567,09181234567` |
 | `SMS_DRY_RUN` | | `true` | `true` = record and log SMS, send nothing. `false` = real SMS |
-| `SEMAPHORE_API_KEY` | if `SMS_DRY_RUN=false` | | Semaphore key (secret, server only) |
-| `SEMAPHORE_SENDER_NAME` | | account default | Registered sender name (≤ 11 characters) |
+| `SMS_PROVIDER` | | `textbee` | `textbee` (an Android phone's SIM) or `semaphore` (paid SMS service) |
+| `TEXTBEE_API_KEY` | if `SMS_DRY_RUN=false` | | textbee key (secret, server only) |
+| `TEXTBEE_DEVICE_ID` | | textbee's default phone | The sending phone's Device ID |
+| `TEXTBEE_SIM_SLOT` | | the phone's default SIM | `0` = SIM 1, `1` = SIM 2 |
+| `SEMAPHORE_API_KEY`, `SEMAPHORE_SENDER_NAME` | with `SMS_PROVIDER=semaphore` | | Semaphore key (secret) and registered sender name |
 | `ALERT_COOLDOWN_MINUTES` | | `30` | No repeat SMS for the same sensor + condition, and no new in-app alert for the same sensor, within this time |
 | `SMS_DAILY_CAP` | | `10` | Real alert SMS per rolling 24 h |
 | `SMS_OFFLINE_AFTER_MINUTES` | | `10` | "Greenhouse offline" SMS after this much silence |
@@ -99,7 +102,7 @@ Order: database → backend → web app → APK → firmware.
 1. **Neon** (<https://neon.tech>): create a project, region **AWS Asia Pacific (Singapore)**. From **Connect** copy two connection strings: **pooled** (toggle *Connection pooling* on; host contains `-pooler`) and **direct** (toggle off).
 2. **Render** (<https://render.com>): push this repo to GitHub, then **New → Blueprint** → pick the repo. Render reads `render.yaml` and asks for the `sync: false` values:
    - `DATABASE_URL` = the pooled string, `DIRECT_URL` = the direct string.
-   - `CORS_ORIGIN`: leave empty for now (step 4). `ALERT_PHONE_NUMBERS`: your numbers, or empty. `SEMAPHORE_*`: empty while `SMS_DRY_RUN=true`.
+   - `CORS_ORIGIN`: leave empty for now (step 4). `ALERT_PHONE_NUMBERS`: your numbers, or empty. `TEXTBEE_*`: empty while `SMS_DRY_RUN=true`.
    - `DEVICE_API_KEY` and `ADMIN_API_KEY` are generated. View them under the service's **Environment**.
 
    What `render.yaml` sets up: free plan, Singapore, root `backend`; build `npm ci --include=dev && npm run build && npx prisma migrate deploy` (the free plan has no pre-deploy step, so migrations run in the build); start `node dist/index.js`; health check `/health`; Node from `engines` (`>=22.13 <25`, i.e. Node 24). Without the Blueprint, create a Web Service with exactly these settings. Check: `https://<service>.onrender.com/health` → `{"status":"ok","db":"ok",…}`.
@@ -121,7 +124,7 @@ Order: database → backend → web app → APK → firmware.
 1. **Hotspot / Wi-Fi on** (2.4 GHz) and the ESP32 powered. The LED should be steady.
 2. **Wake the backend ~2 min before:** open `https://<service>.onrender.com/health` and wait for `"db":"ok"` (the first request after 15 idle minutes takes about a minute; a powered ESP32 keeps it awake).
 3. **ESP32 posting:** the app's Home shows "Updated … ago" under 30 s and no "Stale data" badge; Render → Logs show no `401`. Serial console `status` shows `posts ok` rising.
-4. **SMS:** `SMS_DRY_RUN=false`, Semaphore credit left, then send one real test SMS and check it arrives:
+4. **SMS:** the textbee phone is on, charging, online and has load; `SMS_DRY_RUN=false`; `npm run sms:check` passes (locally, same values). Then send one real test SMS and check it arrives:
    ```powershell
    curl.exe -X POST -H "X-Admin-Key: <ADMIN_API_KEY>" https://<service>.onrender.com/api/alerts/test
    ```
@@ -134,7 +137,7 @@ Order: database → backend → web app → APK → firmware.
 - **Neon free:** the compute suspends when idle (first query ~1 s slower); monthly compute and storage limits apply. Check them in the Neon console.
 - **Open endpoints:** reading data, changing limits, calibrating and marking alerts read need no login (single-user class project). Anyone with the URL can do that. Only posting readings (`X-Device-Key`) and the test SMS (`X-Admin-Key`) need a key.
 - **Firmware TLS** doesn't verify the server certificate (`setInsecure()`); `uplink.cpp` shows how to pin the root CA.
-- **SMS:** "sent" means Semaphore accepted it, not that the phone received it. A Semaphore timeout is retried once, so in rare cases an SMS can arrive twice.
+- **SMS (textbee):** the sending phone is a single point of failure: if it is off, offline, asleep or out of load, the SMS waits or fails. "sent" means queued on that phone, not received. The free plan allows 50 SMS a day and 300 a month (received SMS count too). A timeout is retried once, so in rare cases an SMS can arrive twice.
 
 ## App UI notes
 

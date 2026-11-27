@@ -9,7 +9,7 @@ import {
   thresholdMessage,
 } from './messages.js';
 import { maskPhone } from './phone.js';
-import type { SmsProvider } from './provider.js';
+import type { SmsProvider, SmsProviderName } from './provider.js';
 import {
   DELIVERED,
   type NewSmsAlert,
@@ -43,7 +43,8 @@ export interface SmsCandidate {
 }
 
 export interface SmsStatusOverview {
-  provider: 'semaphore';
+  /** SMS_PROVIDER, also in a dry run. */
+  provider: SmsProviderName;
   dryRun: boolean;
   /** Masked. */
   recipients: string[];
@@ -77,6 +78,8 @@ interface Deps {
   store: SmsStore;
   /** Required unless dryRun (env validation guarantees it). */
   provider: SmsProvider | null;
+  /** SMS_PROVIDER (shown in the status even when `provider` is null in a dry run). */
+  providerName: SmsProviderName;
   /** SMS_DRY_RUN: record and log every SMS as "dry_run", never call the provider. */
   dryRun: boolean;
   /** ALERT_PHONE_NUMBERS, normalized (09XXXXXXXXX). Empty = SMS off. */
@@ -110,7 +113,16 @@ type Draft = Omit<
  * - SMS_DAILY_CAP limits real SMS per rolling 24 h; SMS_DRY_RUN never calls the provider
  */
 export function createSmsNotifier(deps: Deps): SmsNotifier {
-  const { store, provider, dryRun, recipients, cooldownMs, dailyCap, offlineAfterMs } = deps;
+  const {
+    store,
+    provider,
+    providerName,
+    dryRun,
+    recipients,
+    cooldownMs,
+    dailyCap,
+    offlineAfterMs,
+  } = deps;
   const clock = deps.clock ?? Date.now;
   const masked = recipients.map(maskPhone);
 
@@ -163,7 +175,8 @@ export function createSmsNotifier(deps: Deps): SmsNotifier {
       }
     }
     if (!provider) {
-      return record(draft, message, 'failed', 'no SMS provider configured (SEMAPHORE_API_KEY)');
+      const key = providerName === 'textbee' ? 'TEXTBEE_API_KEY' : 'SEMAPHORE_API_KEY';
+      return record(draft, message, 'failed', `no SMS provider configured (${key})`);
     }
     let result: { ok: boolean; providerResponse: string };
     try {
@@ -319,7 +332,7 @@ export function createSmsNotifier(deps: Deps): SmsNotifier {
         store.recent(10),
       ]);
       return {
-        provider: 'semaphore',
+        provider: providerName,
         dryRun,
         recipients: masked,
         cooldownMinutes: Math.round(cooldownMs / MIN_MS),

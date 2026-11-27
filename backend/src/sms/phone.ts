@@ -1,9 +1,9 @@
 /**
- * Philippine mobile numbers for the SMS provider (Semaphore).
+ * Philippine mobile numbers for the SMS providers.
  *
- * Semaphore's API docs (semaphore.co/docs, "Sending Messages") show the `number`
- * parameter in the local 11-digit form ("09998887777"), and accept several numbers
- * separated by commas. Every number is therefore normalized to 09XXXXXXXXX.
+ * Numbers are stored normalized to 09XXXXXXXXX: the form in Semaphore's request
+ * examples (semaphore.co/docs, "Sending Messages"). textbee recommends E.164
+ * (textbee.dev/docs, "Sending SMS"), so its provider converts with toE164().
  *
  * Accepted input: 09XXXXXXXXX, 9XXXXXXXXX, 639XXXXXXXXX, +639XXXXXXXXX, with
  * optional spaces, dashes, dots or parentheses ("+63 917-123-4567").
@@ -15,6 +15,11 @@ const PH_MOBILE = /^(?:\+?63|0)?(9\d{9})$/;
 export function normalizePhMobile(input: string): string | null {
   const match = PH_MOBILE.exec(input.replace(SEPARATORS, ''));
   return match ? `0${match[1] ?? ''}` : null;
+}
+
+/** "09171234567" → "+639171234567" (E.164). Expects a normalized number. */
+export function toE164(phMobile: string): string {
+  return `+63${phMobile.replace(/^0/, '')}`;
 }
 
 export interface PhoneList {

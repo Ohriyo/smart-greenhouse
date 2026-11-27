@@ -32,11 +32,15 @@ services:
         sync: false
       - key: ALERT_PHONE_NUMBERS # e.g. 09171234567,09181234567 (empty = no SMS)
         sync: false
-      - key: SMS_DRY_RUN # "false" = real SMS (needs SEMAPHORE_API_KEY)
+      - key: SMS_DRY_RUN # "false" = real SMS (needs the provider's API key)
         value: "true"
-      - key: SEMAPHORE_API_KEY
+      - key: SMS_PROVIDER # textbee (an Android phone's SIM) or semaphore
+        value: textbee
+      - key: TEXTBEE_API_KEY # from the textbee dashboard (secret)
         sync: false
-      - key: SEMAPHORE_SENDER_NAME # optional: a sender name registered in Semaphore
+      - key: TEXTBEE_DEVICE_ID # the phone's Device ID (textbee app or dashboard)
+        sync: false
+      - key: TEXTBEE_SIM_SLOT # optional: 0 = SIM 1, 1 = SIM 2
         sync: false
       - key: ALERT_COOLDOWN_MINUTES
         value: "30"

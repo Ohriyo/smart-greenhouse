@@ -49,6 +49,7 @@ export async function startTestServer(
   const sms = createSmsNotifier({
     store: createPrismaSmsStore(),
     provider: opts.provider ?? null,
+    providerName: 'textbee',
     dryRun: opts.dryRun ?? false,
     recipients: TEST_NUMBERS,
     cooldownMs: 30 * MIN,

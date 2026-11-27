@@ -1,6 +1,6 @@
 #pragma once
-// Commands from the backend (the "commands" array of the POST /api/readings
-// response) and the serial console.
+// Commands from the backend (a message on greenhouse/{id}/command, or the
+// "commands" array of a POST /api/readings response) and the serial console.
 //
 // parse() runs in the uplink task: JSON object → validated Command. Unknown
 // types, invalid values and stale commands are logged and ignored.

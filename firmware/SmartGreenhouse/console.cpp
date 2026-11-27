@@ -19,14 +19,14 @@ void help() {
       "\nCommands:\n"
       "  status                   settings, Wi-Fi, server, sensor values\n"
       "  watch                    toggle raw sensor print every 1 s\n"
-      "  post                     send a reading to the server now\n"
+      "  post                     send a reading now (MQTT, or HTTPS as fallback)\n"
       "  cal dry                  soil sensor in AIR now: save as 0 %\n"
       "  cal wet                  soil sensor in WATER now: save as 100 %\n"
       "  cal <dryMv> <wetMv>      set calibration numbers directly\n"
-      "  id <deviceId>            greenhouse id sent with each reading (default gh-01)\n"
+      "  id <deviceId>            greenhouse id (default gh-01; MQTT topics use it), then reboot\n"
       "  factory                  erase saved settings, then reboot\n"
       "  reboot\n"
-      "Wi-Fi, server URL and device key are in secrets.h (reflash to change).\n"));
+      "Wi-Fi, MQTT broker, server URL and device key are in secrets.h (reflash to change).\n"));
 }
 
 void status() {
@@ -67,7 +67,14 @@ void run(char* cmd) {
   } else if (!strcmp(c0, "cal") && argc == 3) {
     if (!settings::setSoilCalibration(atoi(argv[1]), atoi(argv[2]))) LOGF("console", "invalid mV values");
   } else if (!strcmp(c0, "id") && argc == 2) {
-    if (!settings::setDeviceId(argv[1])) LOGF("console", "invalid id: 1–32 of A-Z a-z 0-9 _ -");
+    if (!settings::setDeviceId(argv[1])) {
+      LOGF("console", "invalid id: 1–32 of A-Z a-z 0-9 _ -");
+    } else {
+      // The MQTT topics and client id are built from it at start: reboot to use it.
+      LOGF("console", "device id saved; rebooting");
+      delay(200);
+      ESP.restart();
+    }
   } else if (!strcmp(c0, "factory")) {
     settings::factoryReset();
     delay(200);

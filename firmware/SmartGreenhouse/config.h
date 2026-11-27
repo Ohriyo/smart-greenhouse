@@ -1,7 +1,7 @@
 #pragma once
 // Pins, timing and defaults. Values marked (NVS) are only defaults: the saved
 // value in flash wins and can be changed from the serial console without
-// reflashing. Wi-Fi, server URL and device key are in secrets.h.
+// reflashing. Wi-Fi, the MQTT broker login, server URL and device key are in secrets.h.
 
 #include <Arduino.h>
 
@@ -17,11 +17,27 @@ constexpr uint8_t PIN_LED = 2;     // on-board blue LED
 
 // ---------- Reading interval: the ONE place to change it ----------
 // The backend marks the greenhouse offline after 3 missed intervals (+2 s).
-constexpr uint32_t READING_INTERVAL_MS = 30000;  // POST /api/readings every 30 s
+constexpr uint32_t READING_INTERVAL_MS = 30000;  // one reading every 30 s (MQTT or HTTPS)
 
-// ---------- Uplink (HTTPS) ----------
+// ---------- MQTT (main transport, contract §4) ----------
+constexpr const char* TOPIC_TELEMETRY = "greenhouse/%s/telemetry";  // %s = device id
+constexpr const char* TOPIC_STATUS = "greenhouse/%s/status";        // retained online/offline
+constexpr const char* TOPIC_COMMAND = "greenhouse/%s/command";
+// A dead link is noticed (Last Will) after ~1.5x this. Above the keep-awake ping's
+// worst case (8 s + 8 s), which blocks the MQTT keep-alive meanwhile.
+constexpr uint16_t MQTT_KEEPALIVE_S = 20;
+constexpr uint16_t MQTT_SOCKET_TIMEOUT_S = 10;  // connect / answer
+constexpr uint16_t MQTT_BUFFER_SIZE = 1024;     // one reading is ~350 bytes of JSON
+constexpr uint32_t MQTT_RETRY_MIN_MS = 10000;   // reconnect after 10 s, 20, 40, 80 …
+constexpr uint32_t MQTT_RETRY_MAX_MS = 120000;  // … at most every 2 min (HTTPS meanwhile)
+
+// ---------- HTTPS (fallback and keep-awake) ----------
 constexpr uint32_t HTTP_TIMEOUT_MS = 20000;        // connect / TLS handshake / answer, each
-constexpr uint32_t RETRY_AFTER_FAILURE_MS = 10000; // a failed POST is retried sooner (cold start)
+constexpr uint32_t RETRY_AFTER_FAILURE_MS = 10000; // a failed reading is retried sooner (cold start)
+// While on MQTT nothing else reaches the backend over HTTP, and Render's free plan
+// sleeps after 15 min without it: GET /health every 10 min keeps it awake.
+constexpr uint32_t KEEP_AWAKE_MS = 600000;
+constexpr uint32_t KEEP_AWAKE_RETRY_MS = 60000;    // after a failed ping (a cold start takes ~1 min)
 constexpr uint32_t WIFI_RETRY_MS = 15000;          // re-join Wi-Fi if auto-reconnect gave up
 constexpr uint32_t MAX_COMMAND_AGE_S = 150;        // contract §4: ignore older commands
 

@@ -2,10 +2,11 @@
 //
 // loop() (core 1) = control: sensors, LED, serial console, commands. It never
 // waits for the network, so the sensors keep being read without Wi-Fi or server.
-// uplink task (core 0) = Wi-Fi, NTP and the HTTPS POST of each reading (uplink.cpp).
+// uplink task (core 0) = Wi-Fi, NTP, MQTT (main) and HTTPS (fallback + keep-awake), uplink.cpp.
 // Every job in loop() runs on its own millis() timer; nothing in it waits.
 //
-// Contract: docs/api-contract.md §2 (POST /api/readings) and §4. Guide: docs/firmware.md.
+// Contract: docs/api-contract.md §2 (reading JSON) and §4 (MQTT topics, HTTPS fallback).
+// Guide: docs/firmware.md.
 
 #include <Arduino.h>
 
@@ -20,7 +21,8 @@
 
 namespace {
 
-// ---------- Status LED: slow blink = no Wi-Fi, double blink = server not reached, on = online ----------
+// ---------- Status LED: slow blink = no Wi-Fi, double blink = server not reached,
+// on with a short gap every 2 s = online over HTTPS (MQTT fallback), steady on = online over MQTT ----------
 
 void updateLed(uint32_t now) {
   bool on = false;
@@ -30,6 +32,9 @@ void updateLed(uint32_t now) {
       break;
     case uplink::State::NoServer:
       on = (now % 1500) < 100 || ((now % 1500) > 250 && (now % 1500) < 350);
+      break;
+    case uplink::State::OnlineHttps:
+      on = (now % 2000) >= 150;
       break;
     case uplink::State::Online:
       on = true;

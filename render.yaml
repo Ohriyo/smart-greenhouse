@@ -1,0 +1,46 @@
+# Render Blueprint: the backend as a free web service (https://render.com/docs/blueprint-spec).
+# Render Dashboard → New → Blueprint → pick this repository. Values marked
+# `sync: false` are asked for when the Blueprint is created (see README "Deploy").
+services:
+  - type: web
+    name: etanim-api
+    runtime: node
+    plan: free
+    region: singapore # closest to the Philippines; create the Neon project in AWS Singapore too
+    rootDir: backend
+    # Only redeploy when the backend changes (not for app or firmware commits).
+    buildFilter:
+      paths:
+        - backend/**
+    # The free plan has no pre-deploy command, so migrations run at the end of the build.
+    # --include=dev: TypeScript and the Prisma CLI are dev dependencies.
+    buildCommand: npm ci --include=dev && npm run build && npx prisma migrate deploy
+    startCommand: node dist/index.js
+    # Always 200 while the process runs; "db" reports the database.
+    healthCheckPath: /health
+    envVars:
+      # Render sets NODE_ENV=production and PORT itself at runtime.
+      - key: DATABASE_URL # Neon: the POOLED connection string (host contains -pooler)
+        sync: false
+      - key: DIRECT_URL # Neon: the DIRECT connection string (used by migrations)
+        sync: false
+      - key: DEVICE_API_KEY # copy it into firmware/SmartGreenhouse/secrets.h (DEVICE_KEY)
+        generateValue: true
+      - key: ADMIN_API_KEY # for POST /api/alerts/test (X-Admin-Key)
+        generateValue: true
+      - key: CORS_ORIGIN # the Vercel URL of the web app, e.g. https://etanim.vercel.app
+        sync: false
+      - key: ALERT_PHONE_NUMBERS # e.g. 09171234567,09181234567 (empty = no SMS)
+        sync: false
+      - key: SMS_DRY_RUN # "false" = real SMS (needs SEMAPHORE_API_KEY)
+        value: "true"
+      - key: SEMAPHORE_API_KEY
+        sync: false
+      - key: SEMAPHORE_SENDER_NAME # optional: a sender name registered in Semaphore
+        sync: false
+      - key: ALERT_COOLDOWN_MINUTES
+        value: "30"
+      - key: SMS_DAILY_CAP
+        value: "10"
+      - key: LOG_LEVEL
+        value: info

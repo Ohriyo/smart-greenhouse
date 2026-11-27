@@ -5,7 +5,7 @@
   "description": "Smart Greenhouse backend: HTTPS reading ingest, REST API, Socket.IO, SMS + push alerts",
   "type": "module",
   "engines": {
-    "node": ">=22.13"
+    "node": ">=22.13 <25"
   },
   "scripts": {
     "dev": "tsx watch src/index.ts",

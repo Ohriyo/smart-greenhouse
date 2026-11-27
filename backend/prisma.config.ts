@@ -8,7 +8,8 @@ if (existsSync('.env')) process.loadEnvFile('.env');
 // The Prisma CLI (migrations) should use a DIRECT connection: Neon's pooled URL
 // (host with "-pooler") goes through PgBouncer, which Prisma Migrate doesn't
 // support. The app itself uses DATABASE_URL (pooled is fine) via src/db.ts.
-const url = process.env.DIRECT_URL ?? process.env.DATABASE_URL;
+// A blank DIRECT_URL (left empty in Render or .env) counts as unset.
+const url = process.env.DIRECT_URL || process.env.DATABASE_URL;
 
 export default defineConfig({
   schema: 'prisma/schema.prisma',

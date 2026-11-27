@@ -1,77 +1,63 @@
 # SMS alerts
 
-The backend sends **one SMS to the owner's phone** when something needs action: a critical reading (air temperature, humidity, soil moisture, light), or the greenhouse being offline for more than N minutes. When the reading is back in range (or the greenhouse is back online), it sends one closing SMS. The exact rules and texts are in [api-contract.md §7](api-contract.md).
-
-Push notifications ([setup-push.md](setup-push.md)) stay the everyday alert. SMS is for emergencies.
+The **backend** texts every number in `ALERT_PHONE_NUMBERS` through [Semaphore](https://semaphore.co) (a Philippine SMS service) when a reading crosses a threshold, once more when it is back to normal, and when the greenhouse goes offline. The exact rules and texts are in [api-contract.md §7](api-contract.md). Everything is set in the server environment (Render → your service → **Environment**, or `backend/.env` locally); the app only shows the status (Settings → SMS alerts) and the SMS result of each alert.
 
 > **Limits to know about**
-> - The SMS is sent by the **backend on your laptop**, through an SMS service on the internet. If the laptop is off, asleep, or has no internet, **no SMS (and no push) is sent**. The ESP32 itself keeps reading its sensors.
-> - Every message costs credit with the SMS provider. A daily cap (default 10) protects you from a surprise bill.
+> - The SMS is sent by the backend. If the backend can't run (Render suspended, database down) or has no internet, no SMS is sent. The ESP32 keeps reading its sensors.
+> - Every message costs credit. A daily cap (`SMS_DAILY_CAP`, default 10 per rolling 24 h) protects you from a surprise bill; test SMS don't count toward it.
 
-## 1. Try it first in test mode (free)
+## 1. Dry run first (free, the default)
 
-Nothing to set up. By default `SMS_PROVIDER=console`: the backend **writes the SMS to its own log instead of sending them**.
+With `SMS_DRY_RUN=true` the backend does everything except calling Semaphore: each SMS is recorded with status `dry_run` and logged as `[dry run, not sent] SMS to 091••••4567: "…"`. No key needed, no credit used.
 
-1. Start the backend (`npm run dev` in `backend/`). It prints `SMS provider: console (test mode, messages are only logged)`.
-2. In the app: **Settings → SMS alerts**. Enter the owner's number, switch **SMS alerts** on, tap **Save**.
-3. Tap **Send test SMS**. In the backend window you see:
-   `[test mode, not sent] SMS to +63••••••4567: "ETanim test: SMS alerts are working."`
-4. Check the real situations with the simulator (`npm run sim -- --hot` in `backend/`). When the temperature becomes critical, the log shows the critical SMS, and later the closing one.
+1. Set `ALERT_PHONE_NUMBERS`, e.g. `09171234567,09181234567` (also accepted: `+639…`, `639…`, `9…`, with spaces or dashes). An invalid entry stops the backend at startup and names its position (never the number).
+2. Trigger a crossing: with the simulator (`npm run sim -- --hot` in `backend/`, locally) or by lowering a limit in the app (Control → Sensor limits).
+3. The app's Alerts tab shows "SMS dry run (not sent)" on the alert; Settings → SMS alerts lists the recent attempts.
 
-## 2. Send real SMS with Semaphore
+## 2. Real SMS with Semaphore
 
-[Semaphore](https://semaphore.co) is a Philippine SMS service with a simple API. (The code is built so another provider can be added; ask if you prefer another one.)
+1. **Account and credit:** create an account at semaphore.co and add credit. Check their current pricing and sender-name rules there. One credit = one SMS of up to 160 characters; ours stay under 160 (plain ASCII, so temperatures read `36C`).
+2. **API key:** copy it from your Semaphore account. It's a secret: it goes only into the server environment, never into the app, git, chats or screenshots.
+3. **Sender name:** Semaphore sends from a *registered* sender name. If your account has a default one, you can leave `SEMAPHORE_SENDER_NAME` empty; otherwise register one (max 11 characters) and set it.
+4. **Set the environment** (Render → Environment → edit, then save; Render redeploys):
 
-1. **Create an account** at semaphore.co and **add credit**. Check their current pricing and sender-name rules there. Their documentation says one credit equals one SMS (a message over 160 characters is split in several; ours stay under 160).
-2. **Get your API key** from your Semaphore account.
-3. **Sender name.** Semaphore sends from a *registered* sender name. If your account has none, sending fails ("error will be thrown" in their docs). Register one in your Semaphore account, then put it in `.env` (max 11 characters). If your account already has a default one, you can leave it out.
-4. **Edit `backend/.env`:**
-   ```
-   SMS_PROVIDER=semaphore
-   SEMAPHORE_API_KEY=your-key-here
-   SEMAPHORE_SENDER_NAME=ETANIM
-   SMS_DAILY_CAP=10
-   ```
-   The backend refuses to start with `SMS_PROVIDER=semaphore` and no key, with a clear message.
-5. **Check your setup without sending anything.** In `backend/`:
+   | Variable | Value |
+   |---|---|
+   | `ALERT_PHONE_NUMBERS` | `09171234567,09181234567` |
+   | `SEMAPHORE_API_KEY` | your key |
+   | `SEMAPHORE_SENDER_NAME` | your registered name (optional) |
+   | `SMS_DRY_RUN` | `false` |
+
+   With `SMS_DRY_RUN=false` and no key the backend refuses to start and says why.
+5. **Check the account without sending anything** (locally, with the same values in `backend/.env`): `npm run sms:check` in `backend/`. It asks Semaphore whether the key works, how much credit is left and which sender names are registered. No SMS, no cost (limited to 2 checks per minute).
+6. **Send one real test SMS** to every number (needs the admin key, Render → Environment → `ADMIN_API_KEY`):
    ```powershell
-   npm run sms:check
+   curl.exe -X POST -H "X-Admin-Key: <ADMIN_API_KEY>" https://<your-service>.onrender.com/api/alerts/test
    ```
-   This asks Semaphore whether your key is accepted, how much credit is left and which sender names are registered, and compares them with your `.env`. It sends **no SMS** and costs nothing. Fix anything marked `FAIL`. (Semaphore limits these questions to 2 per minute: don't run it in a loop.)
-6. **Restart the backend** (`Ctrl+C`, then `npm run dev`). It prints `SMS provider: semaphore`.
-7. In the app (Settings → SMS alerts) tap **Send test SMS**. The phone should receive it within seconds.
-8. To go back to test mode at any time, set `SMS_PROVIDER=console` and restart.
+   Answer `"status":"sent"` = Semaphore accepted it (delivery to the phone isn't confirmed; check the phone). `"failed"` shows Semaphore's answer in `providerResponse`. At most 5 test SMS per hour.
 
-**The API key is a secret.** It lives only in `backend/.env`, which git ignores. It is never sent to the app, never returned by the API, and never written to logs or error messages. Don't paste it in chats or commit it.
+## How it behaves
 
-## What you set where
-
-| Setting | Where | Why |
-|---|---|---|
-| Provider, API key, sender name, daily cap | `backend/.env` | Secrets and server settings |
-| Owner's number, on/off, "offline after N minutes" | App: Settings → SMS alerts | Easy to change; stored in the backend database |
-
-The number must be in international format: `+639171234567`. The app converts `0917 123 4567` for you.
+- **Any crossing:** above the max or below the min, warning or critical, texts once: `[Greenhouse] Soil moisture LOW: 18% (min 30%) at 14:32` (Asia/Manila time).
+- **Cooldown:** the same sensor + condition (e.g. air temp HIGH) is not texted again within `ALERT_COOLDOWN_MINUTES` (default 30). A crossing inside the cooldown is recorded as `skipped_cooldown`.
+- **Back to normal:** one SMS after a texted HIGH/LOW: `[Greenhouse] Soil moisture back to normal: 35% at 15:02`.
+- **Offline:** after `SMS_OFFLINE_AFTER_MINUTES` (default 10) without data, and one SMS when readings return.
+- **Every attempt is stored** (sent / failed / skipped_cooldown / skipped_daily_cap / dry_run) with Semaphore's answer (key removed, numbers masked).
+- **Never blocks a reading:** the SMS is sent after the reading is stored; a Semaphore timeout (10 s) is retried once, then recorded as failed.
 
 ## Troubleshooting
 
-The app shows the last result under **Last SMS**, and the backend log has the full reason.
+The app (Settings → SMS alerts, or the alert's details) shows the last result; the Render log has the full reason.
 
 | Message | Meaning / fix |
 |---|---|
-| `npm run sms:check` says `FAIL` | It names the problem: key not accepted, no credit, or a sender name that isn't registered. Fix it in `.env` or your Semaphore account |
-| `Semaphore answered HTTP 401` / `rejected the message` | Wrong or missing API key, or the sender name isn't registered/active. Check `SEMAPHORE_API_KEY` and `SEMAPHORE_SENDER_NAME` |
-| `Could not reach Semaphore` | The laptop has no internet, or Semaphore is down |
-| `Semaphore reports the message as failed` / `refunded` | Their network could not deliver it (wrong number, phone off for too long). Check the number and your credit |
-| `daily limit of N SMS reached` | The safety cap was hit. Raise `SMS_DAILY_CAP` and restart, or wait (it is a rolling 24 hours) |
-| Test SMS: "Save the owner's phone number first" | Enter and save the number first |
-| Test SMS: "Too many test messages" | At most 5 per hour |
-| Nothing arrives, no error | You are still in test mode (`SMS_PROVIDER=console`): look at the backend log |
-| Message arrives late | Provider/network delay. SMS is not instant; the push notification usually is |
-
-## How it behaves (short version)
-
-- **Once per situation:** a critical reading is announced once, not every few seconds. When it's over, one closing SMS follows.
-- **Air temperature:** critical → "Air temp 38.4 C (max 35). Too hot." (or "Too cold."). When it is back in range you get "Air temp back in range: 34 C."
-- **Offline:** after N minutes without data (default 10). One more SMS when it's back.
-- **A backend restart** doesn't repeat messages or lose the closing one.
+| Backend won't start: `ALERT_PHONE_NUMBERS … position 2` | That entry isn't a PH mobile number (09XXXXXXXXX) |
+| Backend won't start: `SEMAPHORE_API_KEY is required when SMS_DRY_RUN=false` | Set the key, or go back to `SMS_DRY_RUN=true` |
+| `failed` with `HTTP 401` / `rejected: …` | Wrong key, or the sender name isn't registered/active |
+| `failed` with `no answer within 10 s` | Semaphore slow or unreachable; retried once. Note: if Semaphore had accepted the first try, the SMS can arrive twice |
+| `Failed` / `Refunded` in the provider answer | The network couldn't deliver it (wrong number, phone off too long) |
+| `skipped_daily_cap` | The cap was hit. Raise `SMS_DAILY_CAP` or wait (rolling 24 h) |
+| Test SMS: `409 SMS_NOT_CONFIGURED` | `ALERT_PHONE_NUMBERS` is empty |
+| Test SMS: `401` / `503 NOT_CONFIGURED` | Wrong `X-Admin-Key` / no `ADMIN_API_KEY` on the server |
+| Status `dry_run`, nothing arrives | `SMS_DRY_RUN` is still `true` |
+| A message starting with "TEST" never arrives | Semaphore silently drops those; ours never start with it |

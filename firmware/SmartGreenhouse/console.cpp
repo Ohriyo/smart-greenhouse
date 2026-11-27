@@ -1,12 +1,10 @@
 #include "console.h"
 
-#include <WiFi.h>
-
 #include "log.h"
-#include "network.h"
 #include "sensors.h"
 #include "settings.h"
 #include "shared.h"
+#include "uplink.h"
 
 namespace console {
 namespace {
@@ -19,22 +17,21 @@ uint32_t nextWatch = 0;
 void help() {
   Serial.println(F(
       "\nCommands:\n"
-      "  status                   settings, connection, sensor values\n"
+      "  status                   settings, Wi-Fi, server, sensor values\n"
       "  watch                    toggle raw sensor print every 1 s\n"
+      "  post                     send a reading to the server now\n"
       "  cal dry                  soil sensor in AIR now: save as 0 %\n"
       "  cal wet                  soil sensor in WATER now: save as 100 %\n"
       "  cal <dryMv> <wetMv>      set calibration numbers directly\n"
-      "  mqtt <host> [port]       broker address (the laptop's LAN IP)\n"
-      "  id <deviceId>            device id (topics greenhouse/<id>/...)\n"
-      "  portal                   open the Wi-Fi setup portal (same as holding BOOT 3 s)\n"
-      "  factory                  erase saved settings (not Wi-Fi), then reboot\n"
-      "  reboot\n"));
+      "  id <deviceId>            greenhouse id sent with each reading (default gh-01)\n"
+      "  factory                  erase saved settings, then reboot\n"
+      "  reboot\n"
+      "Wi-Fi, server URL and device key are in secrets.h (reflash to change).\n"));
 }
 
 void status() {
   settings::print();
-  LOGF("status", "network: %s, Wi-Fi \"%s\" IP %s RSSI %d", net::stateName(net::state()),
-       WiFi.SSID().c_str(), WiFi.localIP().toString().c_str(), WiFi.RSSI());
+  uplink::printStatus();
   sensors::printRaw();
   Snapshot s = shared::snapshot();
   if (s.soilPctOk) LOGF("status", "soil moisture: %.1f %%", s.soilPct);
@@ -59,6 +56,8 @@ void run(char* cmd) {
   else if (!strcmp(c0, "watch")) {
     watch = !watch;
     LOGF("console", "watch %s", watch ? "on" : "off");
+  } else if (!strcmp(c0, "post")) {
+    shared::requestReading();
   } else if (!strcmp(c0, "cal") && argc == 2 && !strcmp(argv[1], "dry")) {
     c.type = CmdType::CalibrateSoilDry;
     post(c);
@@ -67,16 +66,8 @@ void run(char* cmd) {
     post(c);
   } else if (!strcmp(c0, "cal") && argc == 3) {
     if (!settings::setSoilCalibration(atoi(argv[1]), atoi(argv[2]))) LOGF("console", "invalid mV values");
-  } else if (!strcmp(c0, "mqtt") && argc >= 2) {
-    Settings s = settings::get();
-    uint16_t port = argc >= 3 ? static_cast<uint16_t>(atoi(argv[2])) : s.mqttPort;
-    if (!settings::setNetwork(argv[1], port, s.deviceId)) LOGF("console", "invalid host/port");
   } else if (!strcmp(c0, "id") && argc == 2) {
-    Settings s = settings::get();
-    if (!settings::setNetwork(s.mqttHost, s.mqttPort, argv[1]))
-      LOGF("console", "invalid id: 1–32 of A-Z a-z 0-9 _ -");
-  } else if (!strcmp(c0, "portal")) {
-    shared::requestPortal();
+    if (!settings::setDeviceId(argv[1])) LOGF("console", "invalid id: 1–32 of A-Z a-z 0-9 _ -");
   } else if (!strcmp(c0, "factory")) {
     settings::factoryReset();
     delay(200);

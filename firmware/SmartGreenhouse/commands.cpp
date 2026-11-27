@@ -1,6 +1,5 @@
 #include "commands.h"
 
-#include <ArduinoJson.h>
 #include <time.h>
 
 #include "config.h"
@@ -11,7 +10,7 @@
 namespace commands {
 namespace {
 
-/** Contract §4: ignore commands issued more than 30 s ago (only if our clock is set). */
+/** Contract §4: ignore commands issued more than 150 s ago (only if our clock is set). */
 bool isStale(const char* issuedAt, long& ageSec) {
   ageSec = 0;
   if (!issuedAt || !clockIsSet()) return false;
@@ -46,23 +45,18 @@ void captureSoilPoint(bool dry) {
 
 bool clockIsSet() { return time(nullptr) > 1700000000; }  // after Nov 2023 = NTP synced
 
-bool parseMqtt(const uint8_t* payload, unsigned int length, Command& c) {
-  JsonDocument doc;
-  if (deserializeJson(doc, payload, length) != DeserializationError::Ok || !doc.is<JsonObject>()) {
-    LOGF("cmd", "ignored: invalid JSON (%u bytes)", length);
-    return false;
-  }
-  const char* type = doc["type"] | "";
-  const char* id = doc["id"] | "?";
+bool parse(JsonObjectConst cmd, Command& c) {
+  const char* type = cmd["type"] | "";
+  const char* id = cmd["id"] | "?";
   long age = 0;
-  if (isStale(doc["issuedAt"] | static_cast<const char*>(nullptr), age)) {
+  if (isStale(cmd["issuedAt"] | static_cast<const char*>(nullptr), age)) {
     LOGF("cmd", "ignored stale %s (%ld s old) id=%s", type, age, id);
     return false;
   }
 
   c = Command{};
   if (strcmp(type, "calibrateSoil") == 0) {
-    const char* point = doc["point"] | "";
+    const char* point = cmd["point"] | "";
     if (strcmp(point, "dry") == 0) c.type = CmdType::CalibrateSoilDry;
     else if (strcmp(point, "wet") == 0) c.type = CmdType::CalibrateSoilWet;
     else {
@@ -70,6 +64,7 @@ bool parseMqtt(const uint8_t* payload, unsigned int length, Command& c) {
       return false;
     }
   } else {
+    // e.g. "simulate" (dev simulator only) or a type from a newer backend.
     LOGF("cmd", "ignored unknown command type '%s'", type);
     return false;
   }
@@ -83,11 +78,8 @@ void apply(const Command& c) {
     case CmdType::CalibrateSoilWet:
       captureSoilPoint(c.type == CmdType::CalibrateSoilDry);
       break;
-    case CmdType::SetNetwork:
-      settings::setNetwork(c.host, c.port, c.deviceId);
-      break;
   }
-  shared::requestTelemetry();  // report the new state right away (= acknowledgement)
+  shared::requestReading();  // report the new state right away (= acknowledgement)
 }
 
 }  // namespace commands

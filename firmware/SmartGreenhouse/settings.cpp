@@ -12,7 +12,6 @@ constexpr const char* NS = "greenhouse";
 Preferences prefs;
 Settings current;
 portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
-volatile uint32_t netVersion = 0;
 
 void copyStr(char* dst, size_t size, const char* src) {
   strncpy(dst, src, size - 1);
@@ -47,11 +46,6 @@ void begin() {
   String id = has("devId") ? prefs.getString("devId") : String(cfg::DEFAULT_DEVICE_ID);
   copyStr(s.deviceId, sizeof(s.deviceId),
           isValidDeviceId(id.c_str()) ? id.c_str() : cfg::DEFAULT_DEVICE_ID);
-  String host = has("mqttHost") ? prefs.getString("mqttHost") : String(cfg::DEFAULT_MQTT_HOST);
-  copyStr(s.mqttHost, sizeof(s.mqttHost), host.length() ? host.c_str() : cfg::DEFAULT_MQTT_HOST);
-  s.mqttPort = has("mqttPort") ? prefs.getUShort("mqttPort") : cfg::DEFAULT_MQTT_PORT;
-  if (s.mqttPort == 0) s.mqttPort = cfg::DEFAULT_MQTT_PORT;
-
   s.soilDryMv = has("soilDry") ? prefs.getUShort("soilDry") : cfg::DEFAULT_SOIL_DRY_MV;
   s.soilWetMv = has("soilWet") ? prefs.getUShort("soilWet") : cfg::DEFAULT_SOIL_WET_MV;
   update([&](Settings& c) { c = s; });
@@ -68,26 +62,16 @@ Settings get() {
 void print() {
   Settings s = get();
   LOGF("settings", "device id      : %s", s.deviceId);
-  LOGF("settings", "mqtt broker    : %s:%u", s.mqttHost, s.mqttPort);
   LOGF("settings", "soil dry / wet : %u / %u mV", s.soilDryMv, s.soilWetMv);
 }
 
-bool setNetwork(const char* host, uint16_t port, const char* deviceId) {
-  if (!host || !*host || strlen(host) > 64 || port == 0 || !isValidDeviceId(deviceId)) return false;
-  update([&](Settings& c) {
-    copyStr(c.mqttHost, sizeof(c.mqttHost), host);
-    c.mqttPort = port;
-    copyStr(c.deviceId, sizeof(c.deviceId), deviceId);
-  });
-  prefs.putString("mqttHost", host);
-  prefs.putUShort("mqttPort", port);
-  prefs.putString("devId", deviceId);
-  netVersion = netVersion + 1;
-  LOGF("settings", "network saved: broker %s:%u, device id %s", host, port, deviceId);
+bool setDeviceId(const char* id) {
+  if (!id || !isValidDeviceId(id)) return false;
+  update([&](Settings& c) { copyStr(c.deviceId, sizeof(c.deviceId), id); });
+  prefs.putString("devId", id);
+  LOGF("settings", "device id saved: %s (used from the next reading)", id);
   return true;
 }
-
-uint32_t networkVersion() { return netVersion; }
 
 void setSoilDry(uint16_t mv) {
   update([&](Settings& c) { c.soilDryMv = mv; });

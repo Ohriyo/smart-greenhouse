@@ -3,16 +3,18 @@
 // This file is intentionally empty: setup() and loop() are in main.cpp, and the
 // rest of the code is in the other tabs. Full guide: docs/firmware.md.
 //
-// Board package (Tools → Board → Boards Manager): "esp32" by Espressif Systems,
-//   version 2.0.17 exactly (NOT 3.x; this code is built and tested on 2.0.17).
+// FIRST: copy secrets.example.h to secrets.h and fill in Wi-Fi, server URL and
+// device key (secrets.h is git-ignored).
 //
-// Libraries (Sketch → Include Library → Manage Libraries), exact versions:
+// Board package (Tools → Board → Boards Manager): "esp32" by Espressif Systems,
+//   version 4.0.0 (compiled with it on 2026-11-27).
+//
+// Libraries (Sketch → Include Library → Manage Libraries):
 //   DHT sensor library         by Adafruit          1.4.7
 //   Adafruit Unified Sensor    by Adafruit          1.1.15
 //   BH1750                     by Christopher Laws  1.3.0
-//   PubSubClient               by Nick O'Leary      2.8
 //   ArduinoJson                by Benoit Blanchon   7.4.3
-//   WiFiManager                by tzapu             2.0.17
+// (Wi-Fi, WiFiClientSecure and HTTPClient come with the board package.)
 //
 // Tools menu:
 //   Board: "ESP32 Dev Module"     Port: the CP2102 port (COM10 on this laptop)

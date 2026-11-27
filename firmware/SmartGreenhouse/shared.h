@@ -1,14 +1,14 @@
 #pragma once
-// Everything the control loop (sensors) and the network task share:
-// - a snapshot of the latest values (control → network, for telemetry)
-// - a command queue (network/console → control: MQTT commands, portal settings)
-// - small request flags (publish telemetry now, open the setup portal)
+// Everything the control loop (sensors) and the uplink task share:
+// - a snapshot of the latest values (control → uplink, for the next reading)
+// - a command queue (uplink/console → control: commands from the backend)
+// - a request flag (send a reading now, e.g. after a calibration change)
 
 #include <Arduino.h>
 
-// Sensor error flags, sent as telemetry "errors": ["dht", ...].
+// Sensor error flags, sent as "errors": ["dht", ...] in each reading.
 enum SensorError : uint8_t {
-  ERR_DHT = 1 << 0,       // DHT22 not answering (airTemp + humidity null)
+  ERR_DHT = 1 << 0,       // DHT22 not answering (temperature + humidity null)
   ERR_BH1750 = 1 << 1,    // light sensor missing / I2C error (lux null)
   ERR_SOIL = 1 << 2,      // soil reading implausible: unplugged, floating, 5 V supply
   ERR_SOIL_CAL = 1 << 3,  // dry/wet calibration invalid (soilMoisture null, soilRaw sent)
@@ -30,14 +30,10 @@ struct Snapshot {
 enum class CmdType : uint8_t {
   CalibrateSoilDry,
   CalibrateSoilWet,
-  SetNetwork,  // from the setup portal
 };
 
 struct Command {
   CmdType type;
-  uint16_t port = 0;
-  char host[65] = {0};
-  char deviceId[33] = {0};
 };
 
 namespace shared {
@@ -46,8 +42,6 @@ void setSnapshot(const Snapshot& s);
 Snapshot snapshot();
 bool postCommand(const Command& c);  // false if the queue is full
 bool takeCommand(Command& c);         // non-blocking
-void requestTelemetry();             // publish as soon as possible (after a change)
-bool takeTelemetryRequest();
-void requestPortal();
-bool takePortalRequest();
+void requestReading();               // send a reading as soon as possible (after a change)
+bool takeReadingRequest();
 }  // namespace shared

@@ -1,12 +1,11 @@
 // Smart Greenhouse ESP32 firmware.
 //
-// loop() (core 1) = control: sensors, BOOT button, LED, serial console,
-// commands. It never waits for the network, so the sensors keep being read
-// without Wi-Fi or MQTT.
-// network task (core 0) = Wi-Fi, MQTT, NTP, setup portal (network.cpp).
+// loop() (core 1) = control: sensors, LED, serial console, commands. It never
+// waits for the network, so the sensors keep being read without Wi-Fi or server.
+// uplink task (core 0) = Wi-Fi, NTP and the HTTPS POST of each reading (uplink.cpp).
 // Every job in loop() runs on its own millis() timer; nothing in it waits.
 //
-// Contract: docs/api-contract.md §4. Bring-up: docs/firmware.md.
+// Contract: docs/api-contract.md §2 (POST /api/readings) and §4. Guide: docs/firmware.md.
 
 #include <Arduino.h>
 
@@ -14,55 +13,32 @@
 #include "config.h"
 #include "console.h"
 #include "log.h"
-#include "network.h"
 #include "sensors.h"
 #include "settings.h"
 #include "shared.h"
+#include "uplink.h"
 
 namespace {
 
-// ---------- BOOT button: hold 3 s → setup portal ----------
-
-uint32_t pressedSince = 0;
-bool longPressFired = false;
-
-void updateButton(uint32_t now) {
-  bool pressed = digitalRead(cfg::PIN_BOOT) == LOW;
-  if (!pressed) {
-    pressedSince = 0;
-    longPressFired = false;
-    return;
-  }
-  if (pressedSince == 0) pressedSince = now;
-  if (!longPressFired && now - pressedSince >= cfg::BOOT_LONG_PRESS_MS) {
-    longPressFired = true;
-    LOGF("button", "BOOT held 3 s → opening setup portal");
-    shared::requestPortal();
-  }
-}
-
-// ---------- Status LED: fast blink = portal, slow = no Wi-Fi, double = no MQTT, on = online ----------
+// ---------- Status LED: slow blink = no Wi-Fi, double blink = server not reached, on = online ----------
 
 void updateLed(uint32_t now) {
   bool on = false;
-  switch (net::state()) {
-    case net::State::Portal:
-      on = (now / 150) % 2;
-      break;
-    case net::State::NoWifi:
+  switch (uplink::state()) {
+    case uplink::State::NoWifi:
       on = (now / 1000) % 2;
       break;
-    case net::State::NoMqtt:
+    case uplink::State::NoServer:
       on = (now % 1500) < 100 || ((now % 1500) > 250 && (now % 1500) < 350);
       break;
-    case net::State::Online:
+    case uplink::State::Online:
       on = true;
       break;
   }
   digitalWrite(cfg::PIN_LED, on ? HIGH : LOW);
 }
 
-// ---------- Snapshot for the network task ----------
+// ---------- Snapshot for the uplink task ----------
 
 void publishSnapshot() {
   sensors::Readings r = sensors::get();
@@ -95,12 +71,11 @@ void setup() {
        (unsigned long)ESP.getCpuFreqMHz(), (unsigned long)(ESP.getFlashChipSize() / 1024));
   settings::print();
 
-  pinMode(cfg::PIN_BOOT, INPUT_PULLUP);
   pinMode(cfg::PIN_LED, OUTPUT);
 
   shared::begin();
   sensors::begin();
-  net::begin();
+  uplink::begin();
   console::begin();
 }
 
@@ -112,7 +87,6 @@ void loop() {
   while (shared::takeCommand(c)) commands::apply(c);
 
   publishSnapshot();
-  updateButton(now);
   updateLed(now);
   console::update(now);
   // Not a wait: hand the CPU to other tasks for one RTOS tick (1 ms) so core 1
